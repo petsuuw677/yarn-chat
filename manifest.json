@@ -1,0 +1,8 @@
+{
+  "name": "Yarn",
+  "short_name": "Yarn",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#12263A",
+  "theme_color": "#12263A"
+}
