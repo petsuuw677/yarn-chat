@@ -159,13 +159,13 @@ export async function onRequest({ request, env, params, waitUntil }) {
   try {
     if (!env.DB) return err('Database not connected. Add a D1 binding named DB.', 500);
     const parts = Array.isArray(params.path) ? params.path : params.path ? [params.path] : [];
-    return await route(request, env.DB, parts, waitUntil);
+    return await route(request, env.DB, parts, waitUntil, env);
   } catch (e) {
     return err('Server error: ' + e.message, 500);
   }
 }
 
-async function route(req, DB, parts, waitUntil = (p) => p) {
+async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
   const m = req.method;
   const url = new URL(req.url);
   const p = parts.join('/');
@@ -283,6 +283,79 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
     return J({ ok: true, done: c.c >= bl.chunks });
   }
 
+  // ---------- Calls: 1-to-1 voice & video (WebRTC; audio/video flow phone-to-phone, encrypted) ----------
+  if (m === 'GET' && p === 'calls/ice') {
+    const stun = [{ urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302'] }];
+    if (env.TURN_KEY_ID && env.TURN_KEY_API_TOKEN) {
+      try {
+        const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${env.TURN_KEY_ID}/credentials/generate-ice-servers`, {
+          method: 'POST',
+          headers: { authorization: 'Bearer ' + env.TURN_KEY_API_TOKEN, 'content-type': 'application/json' },
+          body: JSON.stringify({ ttl: 86400 }),
+        });
+        if (r.ok) {
+          const d = await r.json();
+          const list = (d.iceServers || []).map((x) => ({ ...x, urls: [].concat(x.urls).filter((u) => !/:53(\?|$)/.test(u)) })).filter((x) => x.urls.length);
+          if (list.length) return J({ iceServers: list, relay: true });
+        }
+      } catch {}
+    }
+    return J({ iceServers: stun, relay: false });
+  }
+  if (m === 'POST' && p === 'calls/start') {
+    const b = await body();
+    const chatId = parseInt(b.chat_id), kind = b.kind === 'video' ? 'video' : 'audio';
+    const ch = await DB.prepare('SELECT c.is_group, c.dm_key FROM members m JOIN chats c ON c.id=m.chat_id WHERE m.chat_id=? AND m.user_id=?').bind(chatId, me.id).first();
+    if (!ch) return err('Chat not found.');
+    if (ch.is_group) return err('Calls work in 1-to-1 chats for now.');
+    const other = +String(ch.dm_key).split(':').find((x) => +x !== me.id);
+    const ok = await DB.prepare('SELECT (SELECT deleted FROM users WHERE id=?2) AS gone, EXISTS(SELECT 1 FROM blocks WHERE (blocker_id=?1 AND blocked_id=?2) OR (blocker_id=?2 AND blocked_id=?1)) AS bl').bind(me.id, other).first();
+    if (ok.gone) return err('This account was deleted.');
+    if (ok.bl) return err("You can't call this person.");
+    const r = await DB.prepare("INSERT INTO calls (chat_id,caller_id,callee_id,kind,status,created_at) VALUES (?,?,?,?,'ringing',?)").bind(chatId, me.id, other, kind, t).run();
+    waitUntil(pushToUser(DB, other, url.origin));
+    return J({ id: r.meta.last_row_id });
+  }
+  if (parts[0] === 'calls' && /^\d+$/.test(parts[1] || '')) {
+    const cid = parseInt(parts[1]), sub = parts[2] || '';
+    const call = await DB.prepare('SELECT * FROM calls WHERE id=?').bind(cid).first();
+    if (!call || (call.caller_id !== me.id && call.callee_id !== me.id)) return err('Call not found.', 404);
+    if (m === 'POST' && sub === 'signal') {
+      const b = await body();
+      if (!['offer', 'answer', 'ice'].includes(b.type)) return err('Bad signal.');
+      const data = JSON.stringify(b.data || null);
+      if (data.length > 60000) return err('Signal too large.');
+      await DB.prepare('INSERT INTO call_signals (call_id,from_id,type,data,created_at) VALUES (?,?,?,?,?)').bind(cid, me.id, b.type, data, t).run();
+      return J({ ok: true });
+    }
+    if (m === 'GET' && sub === 'signals') {
+      const after = parseInt(url.searchParams.get('after') || '0');
+      const r = await DB.prepare('SELECT id,type,data FROM call_signals WHERE call_id=? AND from_id<>? AND id>? ORDER BY id LIMIT 100').bind(cid, me.id, after).all();
+      return J({ status: call.status, signals: r.results.map((x) => ({ id: x.id, type: x.type, data: JSON.parse(x.data) })) });
+    }
+    if (m === 'POST' && sub === 'answer') {
+      if (call.callee_id !== me.id || call.status !== 'ringing') return err('This call has ended.');
+      await DB.prepare("UPDATE calls SET status='active', answered_at=? WHERE id=?").bind(t, cid).run();
+      return J({ ok: true });
+    }
+    if (m === 'POST' && sub === 'end') {
+      if (['ended', 'missed', 'declined'].includes(call.status)) return J({ ok: true });
+      const b = await body();
+      const status = call.status === 'active' ? 'ended' : me.id === call.callee_id && b.reason !== 'timeout' ? 'declined' : 'missed';
+      const label = call.kind === 'video' ? 'video call' : 'voice call';
+      const secs = call.answered_at ? Math.round((t - call.answered_at) / 1000) : 0;
+      const text = status === 'ended' ? `📞 ${label[0].toUpperCase() + label.slice(1)} · ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
+        : status === 'declined' ? `📵 Declined ${label}` : `📵 Missed ${label}`;
+      await DB.batch([
+        DB.prepare('UPDATE calls SET status=?, ended_at=? WHERE id=?').bind(status, t, cid),
+        DB.prepare('DELETE FROM call_signals WHERE call_id=?').bind(cid),
+        DB.prepare("INSERT INTO messages (chat_id,sender_id,type,body,created_at) VALUES (?,?,'system',?,?)").bind(call.chat_id, call.caller_id, text, t),
+        DB.prepare('UPDATE chats SET last_msg_at=? WHERE id=?').bind(t, call.chat_id),
+      ]);
+      return J({ ok: true, status });
+    }
+  }
+
   // ---------- Push notifications ----------
   if (m === 'GET' && p === 'push/key') return J({ key: (await vapidKeys(DB)).pub });
   if (m === 'POST' && p === 'push/subscribe') {
@@ -313,7 +386,10 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
       WHERE mem.user_id=?1 AND m.id>mem.last_read_id
       ORDER BY m.id DESC LIMIT 5`).bind(me.id).all();
     await DB.prepare('UPDATE members SET delivered_id=(SELECT MAX(id) FROM messages WHERE chat_id=members.chat_id) WHERE user_id=? AND delivered_id<(SELECT COALESCE(MAX(id),0) FROM messages WHERE chat_id=members.chat_id)').bind(me.id).run();
-    return J({ messages: r.results });
+    const inc = await DB.prepare(`SELECT (SELECT json_object('id',cl.id,'kind',cl.kind,'chat_id',cl.chat_id,'caller_id',cl.caller_id,'display_name',cu.display_name,'username',cu.username,'avatar_key',cu.avatar_key,
+        'nick',(SELECT nickname FROM padis pp WHERE pp.owner_id=?1 AND pp.padi_id=cl.caller_id))
+      FROM calls cl JOIN users cu ON cu.id=cl.caller_id WHERE cl.callee_id=?1 AND cl.status='ringing' AND cl.created_at>?2 ORDER BY cl.id DESC LIMIT 1) AS c`).bind(me.id, t - 45000).first();
+    return J({ messages: r.results, call: inc && inc.c ? JSON.parse(inc.c) : null });
   }
 
   // Save my encryption keys (only if I don't have any yet)
@@ -570,13 +646,16 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
       LEFT JOIN users su ON su.id=lm.sender_id
       WHERE mem.user_id=?1
       ORDER BY c.last_msg_at DESC LIMIT 100`).bind(me.id, t).all();
+    const inc = await DB.prepare(`SELECT (SELECT json_object('id',cl.id,'kind',cl.kind,'chat_id',cl.chat_id,'caller_id',cl.caller_id,'display_name',cu.display_name,'username',cu.username,'avatar_key',cu.avatar_key,
+        'nick',(SELECT nickname FROM padis pp WHERE pp.owner_id=?1 AND pp.padi_id=cl.caller_id))
+      FROM calls cl JOIN users cu ON cu.id=cl.caller_id WHERE cl.callee_id=?1 AND cl.status='ringing' AND cl.created_at>?2 ORDER BY cl.id DESC LIMIT 1) AS c`).bind(me.id, t - 45000).first();
     const chats = r.results.map((c) => {
       c.other_seen = c.other_blocked_me ? 0 : showSeen(c.other_seen, c.other_privacy, c.other_has_me);
       if (c.other_blocked_me) c.other_avatar = null;
       delete c.other_privacy; delete c.other_has_me; delete c.other_blocked_me;
       return c;
     });
-    return J({ chats, now: t });
+    return J({ chats, now: t, incoming: inc && inc.c ? JSON.parse(inc.c) : null });
   }
 
   if (m === 'POST' && p === 'chats/direct') {
