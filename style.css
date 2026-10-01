@@ -556,3 +556,44 @@ button { cursor: pointer; background: none; border: 0; }
 .dev-note { margin: 0 2px 6px; font-size: 13px; }
 .urow.dev { cursor: default; }
 .dev-ic { width: 40px; height: 40px; border-radius: 12px; background: var(--bg); display: grid; place-items: center; font-size: 20px; flex: none; }
+
+/* ================= v7: voice & video calls ================= */
+.head-call { color: var(--ink); }
+.head-call:hover { color: var(--pink); }
+.call { position: fixed; inset: 0; z-index: 98; color: #fff; overflow: hidden; display: flex; flex-direction: column; align-items: center;
+  background: radial-gradient(600px 500px at 50% 25%, rgba(240,56,107,.35), transparent 65%), radial-gradient(500px 400px at 50% 100%, rgba(255,122,61,.25), transparent 60%), #0B1220; animation: fade .2s; }
+.call #remoteVid { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; opacity: 0; transition: opacity .3s; }
+.call.has-video.live #remoteVid { opacity: 1; }
+.call-info { position: relative; z-index: 2; text-align: center; margin-top: calc(14vh + env(safe-area-inset-top, 0px)); display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0 20px; transition: all .3s; }
+.call-av { position: relative; margin-bottom: 14px; }
+.call-av .avatar { width: 120px; height: 120px; font-size: 40px; border: 4px solid rgba(255,255,255,.15); }
+.call.ringing .call-av::before, .call:not(.live) .call-av::before, .call.ringing .call-av::after, .call:not(.live) .call-av::after {
+  content: ''; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid rgba(255,255,255,.35); animation: pulse 1.8s ease-out infinite; }
+.call.ringing .call-av::after, .call:not(.live) .call-av::after { animation-delay: .9s; }
+@keyframes pulse { from { transform: scale(1); opacity: .9; } to { transform: scale(1.6); opacity: 0; } }
+.call-info h2 { font-size: 28px; letter-spacing: -0.02em; text-shadow: 0 2px 10px rgba(0,0,0,.4); }
+#callStatus { font-size: 16px; opacity: .85; font-variant-numeric: tabular-nums; text-shadow: 0 1px 6px rgba(0,0,0,.5); }
+.call-lock { font-size: 12.5px; opacity: .6; margin-top: 4px; }
+.call.has-video.live .call-info { margin-top: calc(14px + env(safe-area-inset-top, 0px)); flex-direction: row; gap: 10px; background: rgba(0,0,0,.35); padding: 8px 14px 8px 8px; border-radius: 999px; backdrop-filter: blur(10px); }
+.call.has-video.live .call-av { margin: 0; }
+.call.has-video.live .call-av .avatar { width: 36px; height: 36px; font-size: 14px; border-width: 0; }
+.call.has-video.live .call-info h2 { font-size: 15px; }
+.call.has-video.live #callStatus { font-size: 13px; }
+.call.has-video.live .call-lock { display: none; }
+#localVid { position: absolute; z-index: 3; right: 14px; top: calc(70px + env(safe-area-inset-top, 0px)); width: 108px; height: 150px; object-fit: cover; border-radius: 16px; border: 2px solid rgba(255,255,255,.25); box-shadow: 0 10px 30px rgba(0,0,0,.4); background: #111; }
+#localVid.mirror { transform: scaleX(-1); }
+#localVid.dim { opacity: .25; }
+.call:not(.has-video) #localVid { top: auto; bottom: calc(150px + env(safe-area-inset-bottom, 0px)); }
+.call-ctl { position: absolute; z-index: 3; left: 0; right: 0; bottom: 0; display: flex; justify-content: center; gap: 18px; padding: 24px 16px calc(36px + env(safe-area-inset-bottom, 0px)); background: linear-gradient(transparent, rgba(0,0,0,.55)); }
+.call-ctl.incoming { gap: 70px; }
+.cbtn { display: flex; flex-direction: column; align-items: center; gap: 7px; color: #fff; font-size: 12.5px; font-weight: 600; }
+.cbtn svg { width: 62px; height: 62px; padding: 17px; border-radius: 50%; background: rgba(255,255,255,.16); backdrop-filter: blur(8px); transition: background .15s, transform .1s; }
+.cbtn:active svg { transform: scale(.92); }
+.cbtn .slash { opacity: 0; }
+.cbtn.off svg { background: #fff; color: #0B1220; }
+.cbtn.off .slash { opacity: 1; }
+.cbtn.end svg { background: #EF4444; transform: rotate(0deg); }
+.cbtn.accept svg { background: #22C55E; animation: wiggle 1.2s ease-in-out infinite; }
+@keyframes wiggle { 0%, 60%, 100% { transform: rotate(0); } 10%, 30%, 50% { transform: rotate(-14deg); } 20%, 40% { transform: rotate(14deg); } }
+.call:not(.video) .vid-only { display: none; }
+@media (min-width: 761px) { #localVid { width: 180px; height: 135px; } }

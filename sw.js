@@ -1,5 +1,5 @@
 // Yarn service worker: install as an app, open fast, and show message notifications even when Yarn is closed.
-const SHELL = 'yarn-shell-v5';
+const SHELL = 'yarn-shell-v6';
 const MEDIA = 'yarn-media-v1';
 const FILES = ['/', '/style.css', '/app.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
@@ -74,16 +74,24 @@ async function onPush() {
   const visible = wins.some((w) => w.visibilityState === 'visible');
   wins.forEach((w) => w.postMessage({ poke: true }));
   const sess = await idbGet('session');
-  let items = [];
+  let items = [], call = null;
   if (sess && sess.token) {
     try {
       const r = await fetch('/api/push/peek', { headers: { authorization: 'Bearer ' + sess.token } });
-      if (r.ok) items = (await r.json()).messages || [];
+      if (r.ok) { const d = await r.json(); items = d.messages || []; call = d.call || null; }
     } catch {}
   }
   const apple = /iPhone|iPad|Macintosh/.test(self.navigator.userAgent);
   // If Yarn is open on screen, the app shows its own pop-up instead
   if (visible && !apple) return;
+  // Incoming call: ring loudly, show who's calling
+  if (call) {
+    const who = call.nick || call.display_name;
+    return self.registration.showNotification(sess && sess.hidePreview ? 'Yarn' : `📞 ${who}`, {
+      body: `Incoming ${call.kind === 'video' ? 'video' : 'voice'} call · tap to answer`, tag: 'yarn-call', renotify: true, requireInteraction: true,
+      icon: '/icon-192.png', badge: '/badge-96.png', vibrate: [500, 250, 500, 250, 500, 250, 500], data: { call: call.id, chat: call.chat_id },
+    });
+  }
   const lastSeen = (await idbGet('lastPush')) || 0;
   const fresh = items.filter((m) => m.id > lastSeen);
   if (items.length) await idbSet('lastPush', Math.max(lastSeen, ...items.map((m) => m.id)));
@@ -119,8 +127,10 @@ async function onPush() {
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
   const chat = e.notification.data && e.notification.data.chat;
+  const call = e.notification.data && e.notification.data.call;
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
-    for (const c of list) { c.focus(); if (chat) c.postMessage({ open: chat }); return; }
+    for (const c of list) { c.focus(); if (call) c.postMessage({ call }); else if (chat) c.postMessage({ open: chat }); return; }
+    if (call) return self.clients.openWindow('/');
     return self.clients.openWindow(chat ? '/?chat=' + chat : '/');
   }));
 });
