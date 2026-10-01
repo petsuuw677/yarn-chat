@@ -36,7 +36,7 @@ async function getUser(DB, req) {
   const token = h.startsWith('Bearer ') ? h.slice(7) : '';
   if (!token) return null;
   const u = await DB.prepare(
-    'SELECT u.id,u.username,u.display_name,u.last_seen,u.about,u.avatar_key,u.seen_privacy FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?'
+    'SELECT u.id,u.username,u.display_name,u.last_seen,u.about,u.avatar_key,u.seen_privacy,u.public_key,u.enc_priv FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?'
   ).bind(token).first();
   return u ? { ...u, token } : null;
 }
@@ -45,7 +45,11 @@ const cleanUsername = (v) => String(v || '').trim().toLowerCase().replace(/^@/, 
 const meOut = (u) => ({
   id: u.id, username: u.username, display_name: u.display_name,
   about: u.about || '', avatar_key: u.avatar_key || null, seen_privacy: u.seen_privacy || 'everyone',
+  public_key: u.public_key || null,
 });
+const okKey = (v, max) => typeof v === 'string' && v.length > 20 && v.length < max;
+const isEnvelope = (v) => typeof v === 'string' && v.startsWith('{"e2e"');
+const B64 = /^[A-Za-z0-9+/=]+$/;
 // Hide "last seen" depending on that person's privacy setting
 const showSeen = (seen, privacy, hasMe) => (privacy === 'nobody' ? 0 : privacy === 'padis' && !hasMe ? 0 : seen || 0);
 
@@ -57,7 +61,7 @@ function parseImage(data, maxLen = 1500000) {
 }
 
 async function profileOf(DB, me, byUsername, val) {
-  const u = await DB.prepare(`SELECT u.id,u.username,u.display_name,u.about,u.avatar_key,u.last_seen,u.seen_privacy,
+  const u = await DB.prepare(`SELECT u.id,u.username,u.display_name,u.about,u.avatar_key,u.last_seen,u.seen_privacy,u.public_key,u.deleted,
       (SELECT nickname FROM padis WHERE owner_id=?1 AND padi_id=u.id) AS nickname,
       EXISTS(SELECT 1 FROM padis WHERE owner_id=?1 AND padi_id=u.id) AS is_padi,
       EXISTS(SELECT 1 FROM padis WHERE owner_id=u.id AND padi_id=?1) AS has_me,
@@ -69,6 +73,7 @@ async function profileOf(DB, me, byUsername, val) {
     id: u.id, username: u.username, display_name: u.display_name, about: u.about || '',
     avatar_key: u.avatar_key || null, nickname: u.nickname || null,
     is_padi: !!u.is_padi, mutual: !!(u.is_padi && u.has_me), blocked: !!u.blocked,
+    public_key: u.public_key || null, deleted: !!u.deleted,
     last_seen: u.blocked_me ? 0 : showSeen(u.last_seen, u.seen_privacy, u.has_me),
   };
 }
@@ -83,7 +88,8 @@ async function canSeeVibes(DB, meId, ownerId) {
 }
 
 const MSG_SELECT = `SELECT m.id,m.sender_id,m.type,m.body,m.media_key,m.created_at,m.reply_to,u.display_name AS sender_name,
-  r.type AS reply_type, r.body AS reply_body, r.sender_id AS reply_sender, ru.display_name AS reply_name
+  u.public_key AS sender_key,
+  r.type AS reply_type, r.body AS reply_body, r.sender_id AS reply_sender, ru.display_name AS reply_name, ru.public_key AS reply_sender_key
   FROM messages m JOIN users u ON u.id=m.sender_id
   LEFT JOIN messages r ON r.id=m.reply_to LEFT JOIN users ru ON ru.id=r.sender_id`;
 
@@ -121,20 +127,28 @@ async function route(req, DB, parts) {
     if (!/^[a-z0-9_]{3,20}$/.test(username)) return err('Username must be 3 to 20 letters, numbers or underscores.');
     if (password.length < 6) return err('Password must be at least 6 characters.');
     if (await DB.prepare('SELECT 1 FROM users WHERE username=?').bind(username).first()) return err('That username is taken.');
+    if (!okKey(b.public_key, 2000) || !okKey(b.enc_priv, 4000)) return err('Your browser could not create encryption keys. Please update it and try again.');
     const salt = randHex(16);
     const hash = await hashPass(password, salt);
-    const r = await DB.prepare('INSERT INTO users (username,display_name,pass_hash,salt,created_at,last_seen) VALUES (?,?,?,?,?,?)')
-      .bind(username, display, hash, salt, t, t).run();
+    const r = await DB.prepare('INSERT INTO users (username,display_name,pass_hash,salt,created_at,last_seen,public_key,enc_priv,pw_v) VALUES (?,?,?,?,?,?,?,?,2)')
+      .bind(username, display, hash, salt, t, t, b.public_key, b.enc_priv).run();
     const id = r.meta.last_row_id;
     const token = await newSession(DB, id);
-    return J({ token, user: meOut({ id, username, display_name: display }) });
+    return J({ token, user: meOut({ id, username, display_name: display, public_key: b.public_key }), enc_priv: b.enc_priv });
   }
   if (m === 'POST' && p === 'login') {
     const b = await body();
-    const u = await DB.prepare('SELECT * FROM users WHERE username=?').bind(cleanUsername(b.username)).first();
-    if (!u || (await hashPass(String(b.password || ''), u.salt)) !== u.pass_hash) return err('Wrong username or password.', 401);
+    const u = await DB.prepare('SELECT * FROM users WHERE username=? AND deleted=0').bind(cleanUsername(b.username)).first();
+    if (!u) return err('Wrong username or password.', 401);
+    if (u.pw_v < 2) {
+      // Account made before encryption: check the old password once, then switch to the new secure login
+      if (!b.legacy_password) return J({ error: 'Upgrading your account…', legacy: true }, 401);
+      if ((await hashPass(String(b.legacy_password), u.salt)) !== u.pass_hash) return err('Wrong username or password.', 401);
+      const salt = randHex(16);
+      await DB.prepare('UPDATE users SET pass_hash=?,salt=?,pw_v=2 WHERE id=?').bind(await hashPass(String(b.password || ''), salt), salt, u.id).run();
+    } else if ((await hashPass(String(b.password || ''), u.salt)) !== u.pass_hash) return err('Wrong username or password.', 401);
     const token = await newSession(DB, u.id);
-    return J({ token, user: meOut(u) });
+    return J({ token, user: meOut(u), enc_priv: u.enc_priv || null });
   }
 
   // ---------- Everything below needs login ----------
@@ -142,7 +156,38 @@ async function route(req, DB, parts) {
   if (!me) return err('Please log in.', 401);
   if (t - me.last_seen > 60000) await DB.prepare('UPDATE users SET last_seen=? WHERE id=?').bind(t, me.id).run();
 
-  if (m === 'GET' && p === 'me') return J({ user: meOut(me) });
+  if (m === 'GET' && p === 'me') return J({ user: meOut(me), enc_priv: me.enc_priv || null });
+
+  // Save my encryption keys (only if I don't have any yet)
+  if (m === 'POST' && p === 'keys') {
+    const b = await body();
+    if (me.public_key) return err('Keys already exist for this account.');
+    if (!okKey(b.public_key, 2000) || !okKey(b.enc_priv, 4000)) return err('Invalid keys.');
+    await DB.prepare('UPDATE users SET public_key=?,enc_priv=? WHERE id=? AND public_key IS NULL').bind(b.public_key, b.enc_priv, me.id).run();
+    return J({ user: meOut({ ...me, public_key: b.public_key }) });
+  }
+
+  // Delete my account
+  if (m === 'POST' && p === 'account/delete') {
+    const b = await body();
+    const u = await DB.prepare('SELECT pass_hash,salt FROM users WHERE id=?').bind(me.id).first();
+    if ((await hashPass(String(b.password || ''), u.salt)) !== u.pass_hash) return err('Your password is wrong.');
+    await DB.batch([
+      DB.prepare("INSERT INTO messages (chat_id,sender_id,type,body,created_at) SELECT m.chat_id,?,'system',?,? FROM members m JOIN chats c ON c.id=m.chat_id WHERE m.user_id=? AND c.is_group=1")
+        .bind(me.id, `${me.display_name} deleted their account`, t, me.id),
+      DB.prepare('DELETE FROM members WHERE user_id=? AND chat_id IN (SELECT id FROM chats WHERE is_group=1)').bind(me.id),
+      DB.prepare('DELETE FROM padis WHERE owner_id=? OR padi_id=?').bind(me.id, me.id),
+      DB.prepare('DELETE FROM blocks WHERE blocker_id=? OR blocked_id=?').bind(me.id, me.id),
+      DB.prepare('DELETE FROM vibe_views WHERE viewer_id=? OR vibe_id IN (SELECT id FROM vibes WHERE user_id=?)').bind(me.id, me.id),
+      DB.prepare('DELETE FROM media WHERE key IN (SELECT media_key FROM vibes WHERE user_id=? AND media_key IS NOT NULL)').bind(me.id),
+      DB.prepare('DELETE FROM vibes WHERE user_id=?').bind(me.id),
+      DB.prepare('DELETE FROM media WHERE key=?').bind(me.avatar_key || '-'),
+      DB.prepare("UPDATE users SET username=?,display_name='Deleted account',about='',avatar_key=NULL,pass_hash='',salt='',enc_priv=NULL,seen_privacy='nobody',deleted=1 WHERE id=?")
+        .bind('deleted_' + me.id + '_' + randHex(4), me.id),
+      DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(me.id),
+    ]);
+    return J({ ok: true });
+  }
   if (m === 'POST' && p === 'logout') {
     await DB.prepare('DELETE FROM sessions WHERE token=?').bind(me.token).run();
     return J({ ok: true });
@@ -178,10 +223,11 @@ async function route(req, DB, parts) {
     const u = await DB.prepare('SELECT pass_hash,salt FROM users WHERE id=?').bind(me.id).first();
     if ((await hashPass(String(b.current || ''), u.salt)) !== u.pass_hash) return err('Your current password is wrong.');
     const next = String(b.next || '');
-    if (next.length < 6) return err('New password must be at least 6 characters.');
+    if (next.length < 20) return err('Invalid new password.');
+    if (me.enc_priv && !okKey(b.enc_priv, 4000)) return err('Could not re-lock your encryption key. Try again.');
     const salt = randHex(16);
     await DB.batch([
-      DB.prepare('UPDATE users SET pass_hash=?,salt=? WHERE id=?').bind(await hashPass(next, salt), salt, me.id),
+      DB.prepare('UPDATE users SET pass_hash=?,salt=?,enc_priv=COALESCE(?,enc_priv),pw_v=2 WHERE id=?').bind(await hashPass(next, salt), salt, b.enc_priv || null, me.id),
       DB.prepare('DELETE FROM sessions WHERE user_id=? AND token<>?').bind(me.id, me.token),
     ]);
     return J({ ok: true });
@@ -192,7 +238,7 @@ async function route(req, DB, parts) {
     const u = cleanUsername(url.searchParams.get('u'));
     if (!u) return err('Type a username.');
     if (u === me.username) return err("That's your own username.");
-    const user = await profileOf(DB, me, true, u);
+    const user = u.startsWith('deleted_') ? null : await profileOf(DB, me, true, u);
     if (!user) return err('No one has that username. Check the spelling.', 404);
     return J({ user });
   }
@@ -204,13 +250,13 @@ async function route(req, DB, parts) {
 
   // ---------- Padis (saved contacts) ----------
   if (m === 'GET' && p === 'padis') {
-    const r = await DB.prepare(`SELECT u.id,u.username,u.display_name,u.about,u.avatar_key,u.last_seen,u.seen_privacy,p.nickname,
+    const r = await DB.prepare(`SELECT u.id,u.username,u.display_name,u.about,u.avatar_key,u.last_seen,u.seen_privacy,u.public_key,p.nickname,
         EXISTS(SELECT 1 FROM padis b WHERE b.owner_id=u.id AND b.padi_id=?1) AS mutual
       FROM padis p JOIN users u ON u.id=p.padi_id WHERE p.owner_id=?1
       ORDER BY LOWER(COALESCE(p.nickname,u.display_name))`).bind(me.id).all();
     const padis = r.results.map((u) => ({
       id: u.id, username: u.username, display_name: u.display_name, about: u.about || '', avatar_key: u.avatar_key,
-      nickname: u.nickname, mutual: !!u.mutual, last_seen: showSeen(u.last_seen, u.seen_privacy, u.mutual),
+      nickname: u.nickname, mutual: !!u.mutual, last_seen: showSeen(u.last_seen, u.seen_privacy, u.mutual), public_key: u.public_key,
     }));
     return J({ padis, now: t });
   }
@@ -265,7 +311,7 @@ async function route(req, DB, parts) {
       DB.prepare(`SELECT v.id,v.type,v.body,v.bg,v.media_key,v.created_at,
           (SELECT COUNT(*) FROM vibe_views vv WHERE vv.vibe_id=v.id) AS views
         FROM vibes v WHERE v.user_id=? AND v.expires_at>? ORDER BY v.id`).bind(me.id, t),
-      DB.prepare(`SELECT v.id,v.user_id,v.type,v.body,v.bg,v.media_key,v.created_at,u.display_name,u.username,u.avatar_key,p.nickname,
+      DB.prepare(`SELECT v.id,v.user_id,v.type,v.body,v.bg,v.media_key,v.created_at,u.display_name,u.username,u.avatar_key,u.public_key AS owner_key,p.nickname,
           EXISTS(SELECT 1 FROM vibe_views vv WHERE vv.vibe_id=v.id AND vv.viewer_id=?1) AS seen
         FROM padis p
         JOIN padis b ON b.owner_id=p.padi_id AND b.padi_id=p.owner_id
@@ -280,15 +326,22 @@ async function route(req, DB, parts) {
     const b = await body();
     const active = await DB.prepare('SELECT COUNT(*) AS n FROM vibes WHERE user_id=? AND expires_at>?').bind(me.id, t).first();
     if (active.n >= 30) return err('You have 30 vibes up already. Delete one first.');
-    const text = String(b.body || '').trim().slice(0, 700);
+    const text = isEnvelope(b.body) ? String(b.body).slice(0, 120000) : String(b.body || '').trim().slice(0, 700);
     const stmts = [];
     let type = 'text', key = null, bg = VIBE_BGS.includes(b.bg) ? b.bg : 'g0';
     if (b.type === 'image') {
-      const img = parseImage(b.data);
-      if (img.error) return err(img.error);
+      let mime, data;
+      if (b.enc_data) {
+        if (!B64.test(b.enc_data) || b.enc_data.length > 1800000) return err('That image is too large.');
+        mime = 'application/octet-stream'; data = b.enc_data;
+      } else {
+        const img = parseImage(b.data);
+        if (img.error) return err(img.error);
+        mime = img.mime; data = img.b64;
+      }
       type = 'image';
       key = randHex(16);
-      stmts.push(DB.prepare('INSERT INTO media (key,mime,data,created_at) VALUES (?,?,?,?)').bind(key, img.mime, img.b64, t));
+      stmts.push(DB.prepare('INSERT INTO media (key,mime,data,created_at) VALUES (?,?,?,?)').bind(key, mime, data, t));
     } else if (!text) return err('Write something for your vibe.');
     stmts.push(DB.prepare('INSERT INTO vibes (user_id,type,body,bg,media_key,created_at,expires_at) VALUES (?,?,?,?,?,?,?)')
       .bind(me.id, type, text, bg, key, t, t + DAY));
@@ -331,7 +384,7 @@ async function route(req, DB, parts) {
         EXISTS(SELECT 1 FROM blocks bl WHERE bl.blocker_id=o.id AND bl.blocked_id=?1) AS other_blocked_me,
         (SELECT nickname FROM padis p WHERE p.owner_id=?1 AND p.padi_id=o.id) AS other_nick,
         lm.id AS last_id, lm.type AS last_type, lm.body AS last_body, lm.sender_id AS last_sender,
-        su.display_name AS last_sender_name,
+        su.display_name AS last_sender_name, su.public_key AS last_sender_key, o.deleted AS other_deleted,
         (SELECT COUNT(*) FROM messages mx WHERE mx.chat_id=c.id AND mx.id>mem.last_read_id AND mx.sender_id<>?1 AND mx.type NOT IN ('system','deleted')) AS unread,
         (SELECT COUNT(*) FROM members mt WHERE mt.chat_id=c.id AND mt.user_id<>?1 AND mt.typing_until>?2) AS typing
       FROM members mem
@@ -353,10 +406,11 @@ async function route(req, DB, parts) {
   if (m === 'POST' && p === 'chats/direct') {
     const b = await body();
     const other = b.user_id
-      ? await DB.prepare('SELECT id FROM users WHERE id=?').bind(parseInt(b.user_id)).first()
-      : await DB.prepare('SELECT id FROM users WHERE username=?').bind(cleanUsername(b.username)).first();
+      ? await DB.prepare('SELECT id,deleted FROM users WHERE id=?').bind(parseInt(b.user_id)).first()
+      : await DB.prepare('SELECT id,deleted FROM users WHERE username=?').bind(cleanUsername(b.username)).first();
     if (!other) return err('No one has that username.');
     if (other.id === me.id) return err("That's your own username.");
+    if (other.deleted) return err('This account was deleted.');
     const key = [me.id, other.id].sort((a, c) => a - c).join(':');
     const found = await DB.prepare('SELECT id FROM chats WHERE dm_key=?').bind(key).first();
     if (found) {
@@ -402,7 +456,7 @@ async function route(req, DB, parts) {
 
     if (m === 'GET' && sub === '') {
       const chat = await DB.prepare('SELECT id,is_group,name,created_by FROM chats WHERE id=?').bind(id).first();
-      const r = await DB.prepare(`SELECT u.id,u.username,u.display_name,u.avatar_key,u.last_seen,u.seen_privacy,
+      const r = await DB.prepare(`SELECT u.id,u.username,u.display_name,u.avatar_key,u.last_seen,u.seen_privacy,u.public_key,u.deleted,
           EXISTS(SELECT 1 FROM padis p WHERE p.owner_id=u.id AND p.padi_id=?2) AS has_me,
           (SELECT nickname FROM padis p WHERE p.owner_id=?2 AND p.padi_id=u.id) AS nickname
         FROM members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=?1 ORDER BY u.display_name`).bind(id, me.id).all();
@@ -413,7 +467,7 @@ async function route(req, DB, parts) {
         blocked_by_me = !!bl.a; blocked_me = !!bl.b;
       }
       const members = r.results.map((u) => ({
-        id: u.id, username: u.username, display_name: u.display_name, nickname: u.nickname,
+        id: u.id, username: u.username, display_name: u.display_name, nickname: u.nickname, public_key: u.public_key, deleted: !!u.deleted,
         avatar_key: blocked_me && u.id === otherId ? null : u.avatar_key,
         last_seen: u.id === me.id ? u.last_seen : blocked_me && u.id === otherId ? 0 : showSeen(u.last_seen, u.seen_privacy, u.has_me),
       }));
@@ -455,18 +509,27 @@ async function route(req, DB, parts) {
 
     if (m === 'POST' && sub === 'messages' && !parts[3]) {
       if (otherId) {
-        const bl = await DB.prepare('SELECT 1 FROM blocks WHERE (blocker_id=?1 AND blocked_id=?2) OR (blocker_id=?2 AND blocked_id=?1)').bind(me.id, otherId).first();
-        if (bl) return err("You can't send messages in this chat.");
+        const bl = await DB.prepare('SELECT (SELECT deleted FROM users WHERE id=?2) AS gone, EXISTS(SELECT 1 FROM blocks WHERE (blocker_id=?1 AND blocked_id=?2) OR (blocker_id=?2 AND blocked_id=?1)) AS bl').bind(me.id, otherId).first();
+        if (bl.gone) return err('This account was deleted.');
+        if (bl.bl) return err("You can't send messages in this chat.");
       }
       const b = await body();
-      let type = 'text', text = String(b.body || '').trim().slice(0, 4000), mediaKey = null;
+      let type = 'text', mediaKey = null;
+      const text = isEnvelope(b.body) ? String(b.body).slice(0, 120000) : String(b.body || '').trim().slice(0, 4000);
       const stmts = [];
       if (b.type === 'image') {
-        const img = parseImage(b.data);
-        if (img.error) return err(img.error);
+        let mime, data;
+        if (b.enc_data) {
+          if (!B64.test(b.enc_data) || b.enc_data.length > 1800000) return err('That image is too large.');
+          mime = 'application/octet-stream'; data = b.enc_data;
+        } else {
+          const img = parseImage(b.data);
+          if (img.error) return err(img.error);
+          mime = img.mime; data = img.b64;
+        }
         type = 'image';
         mediaKey = randHex(16);
-        stmts.push(DB.prepare('INSERT INTO media (key,mime,data,created_at) VALUES (?,?,?,?)').bind(mediaKey, img.mime, img.b64, t));
+        stmts.push(DB.prepare('INSERT INTO media (key,mime,data,created_at) VALUES (?,?,?,?)').bind(mediaKey, mime, data, t));
       } else if (!text) return err('Type a message first.');
       const replyTo = parseInt(b.reply_to) || 0;
       stmts.push(DB.prepare('INSERT INTO messages (chat_id,sender_id,type,body,media_key,reply_to,created_at) VALUES (?,?,?,?,?,(SELECT id FROM messages WHERE id=? AND chat_id=?),?)')
