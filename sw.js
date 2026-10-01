@@ -1,7 +1,7 @@
 // Yarn service worker: install as an app, open fast, and show message notifications even when Yarn is closed.
 const SHELL = 'yarn-shell-v4';
 const MEDIA = 'yarn-media-v1';
-const FILES = ['/', '/style.css', '/app.js', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
+const FILES = ['/', '/style.css', '/app.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (e) => {
   // Cache each file on its own, so one missing file never breaks installing the app
@@ -91,7 +91,7 @@ async function onPush() {
   if (self.navigator.setAppBadge && total) self.navigator.setAppBadge(total).catch(() => {});
   if (!fresh.length) {
     if (items.length && !apple) return;
-    return self.registration.showNotification('Yarn', { body: 'You have a new message', tag: 'yarn-new', icon: '/icons/icon-192.png', badge: '/icons/badge-96.png', silent: visible });
+    return self.registration.showNotification('Yarn', { body: 'You have a new message', tag: 'yarn-new', icon: '/icon-192.png', badge: '/badge-96.png', silent: visible });
   }
   const keyRec = sess ? await idbGet('id-' + sess.userId) : null;
   for (const m of fresh.slice(0, 3)) {
@@ -107,7 +107,7 @@ async function onPush() {
     }
     if (m.is_group && !sess.hidePreview) text = who.split(' ')[0] + ': ' + text;
     await self.registration.showNotification(sess.hidePreview ? 'Yarn' : title, {
-      body: text, tag: 'yarn-' + m.chat_id, renotify: true, icon: '/icons/icon-192.png', badge: '/icons/badge-96.png',
+      body: text, tag: 'yarn-' + m.chat_id, renotify: true, icon: '/icon-192.png', badge: '/badge-96.png',
       data: { chat: m.chat_id }, timestamp: m.created_at, silent: visible,
     });
   }

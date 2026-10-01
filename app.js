@@ -456,7 +456,7 @@ function notifyMsg(c) {
     if ('Notification' in window && Notification.permission === 'granted') {
       const t = S.locked || PIN.get() ? APP_NAME : title, b = S.locked || PIN.get() ? 'New message' : text;
       navigator.serviceWorker?.getRegistration?.().then((reg) => {
-        if (reg) return reg.showNotification(t, { body: b, tag: 'yarn-' + c.id, icon: '/icons/icon-192.png', badge: '/icons/badge-96.png', data: { chat: c.id } });
+        if (reg) return reg.showNotification(t, { body: b, tag: 'yarn-' + c.id, icon: '/icon-192.png', badge: '/badge-96.png', data: { chat: c.id } });
         const n = new Notification(t, { body: b, tag: 'yarn-' + c.id }); n.onclick = () => { window.focus(); openChat(c.id); n.close(); };
       }).catch(() => {});
     }
