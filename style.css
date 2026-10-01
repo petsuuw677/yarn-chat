@@ -638,3 +638,13 @@ button { cursor: pointer; background: none; border: 0; }
 [data-theme=dark] .ai-item { background: linear-gradient(90deg, rgba(139,92,246,.12), transparent 70%); }
 [data-theme=dark] .txt.md code { background: rgba(255,255,255,.08); }
 [data-theme=dark] .ai-who { color: #C4B5FD; }
+
+/* ================= v9: AI images ================= */
+.ai-img-btn.on { color: #fff; background: linear-gradient(135deg,#6366F1,#EC4899); }
+.ai-img { min-width: 220px; margin: 2px -6px 4px !important; border-radius: 14px !important; }
+.ai-img img { max-height: 420px; }
+.ai-img-wait { display: grid; place-items: center; gap: 8px; width: 240px; height: 240px; border-radius: 14px; margin: 2px 0 4px; font-size: 14px; font-weight: 600; color: var(--muted); text-align: center;
+  background: linear-gradient(110deg, rgba(99,102,241,.08) 30%, rgba(236,72,153,.18) 50%, rgba(99,102,241,.08) 70%); background-size: 300% 100%; animation: shimmer 1.4s infinite linear; }
+.ai-img-wait span { font-size: 36px; animation: blink 1.2s infinite; }
+.ai-img-wait.gone { animation: none; background: var(--bg); height: auto; padding: 18px; width: auto; }
+.ai-acts { flex-wrap: wrap; }

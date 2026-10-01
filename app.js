@@ -628,11 +628,11 @@ function renderChats() {
     (!q || chatTitle(c).toLowerCase().includes(q) || (c.other_username || '').includes(q)) &&
     (f === 'all' || (f === 'unread' && c.unread) || (f === 'groups' && c.is_group)));
   const ul = $('#chatList');
-  const lastAI = (LS.get(aiKey(), []).slice(-1)[0] || {}).content;
+  const lastAIm = LS.get(aiKey(), []).slice(-1)[0] || {}, lastAI = lastAIm.content, lastAIimg = lastAIm.image || lastAIm.expired;
   const aiRow = f === 'all' && (!q || 'yarn ai assistant bot'.includes(q))
     ? `<li class="chat-item ai-item ${AI.open ? 'active' : ''}" data-ai="1"><span class="avatar ai-av">✨</span>
         <div class="ci-main"><div class="ci-top"><span class="ci-name">Yarn AI <span class="ai-badge">AI</span></span></div>
-        <div class="ci-bot"><span class="ci-last">${esc(lastAI ? lastAI.replace(/[*#`_]/g, '').slice(0, 80) : 'Ask me anything ✨')}</span></div></div></li>` : '';
+        <div class="ci-bot"><span class="ci-last">${esc(lastAI ? lastAI.replace(/[*#`_]/g, '').slice(0, 80) : lastAIimg ? '🎨 Image' : 'Ask me anything ✨')}</span></div></div></li>` : '';
   if (!S.chats.length) {
     ul.innerHTML = aiRow + `<li class="list-empty"><strong>No chats yet</strong>Find a friend by their exact username and say hi.<br><button class="btn" id="emptyNew">Start a chat</button></li>`;
     $('#emptyNew').onclick = openNewChat;
@@ -1305,13 +1305,13 @@ async function msgMediaURL(m) {
   return blobURL(m.media_key, m.ck, (m.meta || {}).mime);
 }
 async function msgBytes(m) { return new Uint8Array(await (await fetch(await msgMediaURL(m))).arrayBuffer()); }
-function forwardSheet(m) {
+function forwardSheet(m, opt = {}) {
   const list = S.chats.filter((c) => !c.other_deleted);
-  showModal(`<h2>Forward to…</h2><p class="muted">${esc(snippet(m.type, m.text).slice(0, 80))}</p>
+  showModal(`<h2>${opt.title || 'Forward to…'}</h2><p class="muted">${esc(snippet(m.type, m.text).slice(0, 80))}</p>
     <div class="ulist fwd">${list.map((c) => `<label class="urow"><input type="checkbox" class="fwchk" value="${c.id}">
       ${c.is_group ? avatarHTML(c.name, 'g' + c.id, 'sm') : avatarHTML(chatTitle(c), c.other_username, 'sm', c.other_avatar)}
       <div class="ur-main"><strong>${esc(chatTitle(c))}</strong><span>${c.is_group ? 'Group' : '@' + esc(c.other_username || '')}</span></div></label>`).join('') || '<p class="muted pad">No chats yet.</p>'}</div>
-    <div class="row"><button class="btn ghost" data-close>Cancel</button><button class="btn" id="fwGo">Forward</button></div>`);
+    <div class="row"><button class="btn ghost" data-close>Cancel</button><button class="btn" id="fwGo">${opt.fwd === false ? 'Send' : 'Forward'}</button></div>`);
   $('#fwGo').onclick = async () => {
     const ids = $$('.fwchk:checked').map((x) => +x.value);
     if (!ids.length) return toast('Pick at least one chat.');
@@ -1323,7 +1323,7 @@ function forwardSheet(m) {
         try {
           const d = await api('chats/' + cid);
           const people = d.members.filter((x) => !x.deleted);
-          const sealed = await seal(people, m.text, { ...(m.meta || {}), fwd: 1 });
+          const sealed = await seal(people, m.text, opt.fwd === false ? { ...(m.meta || {}) } : { ...(m.meta || {}), fwd: 1 });
           const req = { type: m.type, body: sealed.body };
           if (m.type === 'image') req.enc_data = b64(await aesEncrypt(sealed.ck, bytes));
           if (m.type === 'video' || m.type === 'voice') req.blob_key = await uploadBlob(await aesEncrypt(sealed.ck, bytes));
@@ -1332,7 +1332,7 @@ function forwardSheet(m) {
         } catch (e) { toast(e.message); }
       }
       hideModal();
-      if (ok) toast(`Forwarded to ${ok} chat${ok > 1 ? 's' : ''} ↪`);
+      if (ok) toast(opt.fwd === false ? `Sent to ${ok} chat${ok > 1 ? 's' : ''} ✅` : `Forwarded to ${ok} chat${ok > 1 ? 's' : ''} ↪`);
       loadChats(); if (ids.includes(S.chatId)) pollMessages();
     } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Forward'; }
   };
@@ -1366,7 +1366,13 @@ async function shareMsg(m) {
 const AI = { open: false, list: [], busy: false, ctrl: null, usage: null };
 const aiKey = () => 'yarn_ai_' + (S.me ? S.me.id : 0);
 function aiLoad() { AI.list = LS.get(aiKey(), []); }
-function aiSave() { LS.set(aiKey(), AI.list.slice(-100)); }
+function aiSave() {
+  const list = AI.list.slice(-100).map((m) => ({ ...m }));
+  let kept = 0;
+  for (let i = list.length - 1; i >= 0; i--) if (list[i].image) { if (++kept > 8) { list[i].image = null; list[i].expired = true; } }
+  list.forEach((m) => { delete m.pendingImg; });
+  LS.set(aiKey(), list);
+}
 function md(src) {
   let s = esc(src || '');
   const blocks = [];
@@ -1381,12 +1387,19 @@ function md(src) {
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[i]);
 }
 const AI_SUGGEST = [
+  ['🎨', 'Draw a cute cat wearing a colourful agbada'],
   ['💌', 'Write a sweet birthday message for my padi'],
   ['🗣️', 'Translate "I go soon come" into proper English'],
   ['💡', 'Give me 5 small business ideas I can start with ₦50k'],
-  ['✍️', 'Help me write a polite reminder to a customer who owes me'],
 ];
 function aiBubble(m, i) {
+  if (m.role === 'assistant' && (m.image || m.pendingImg || m.expired)) {
+    const inner = m.pendingImg ? '<span class="ai-img-wait"><span>🎨</span>Creating your image…</span>'
+      : m.expired ? '<span class="ai-img-wait gone">🖼️ This image is no longer saved on this device.</span>'
+      : `<span class="img ai-img" data-src="${m.image}"><img src="${m.image}" alt="${esc(m.prompt || 'AI image')}"></span>`;
+    return `<div class="m first ai-a" data-ai="${i}"><div class="who ai-who">✨ Yarn AI</div>${inner}
+      ${m.image ? `<div class="ai-acts"><button data-imgshare="${i}">⬇️ Save / Share</button><button data-imgsend="${i}">💬 Send to chat</button><button data-again="${i}">🔁 Try again</button></div>` : ''}</div>`;
+  }
   if (m.role === 'user') return `<div class="m mine first ai-q" data-ai="${i}"><div class="txt">${linkify(m.content)}</div></div>`;
   const body = m.content ? md(m.content) : '<span class="ai-dots"><i></i><i></i><i></i></span>';
   return `<div class="m first ai-a ${m.error ? 'ai-err' : ''}" data-ai="${i}"><div class="who ai-who">✨ Yarn AI</div><div class="txt md">${body}</div>
@@ -1406,7 +1419,8 @@ function aiUsageText() {
   const u = AI.usage; if (!u) return 'Ask me anything';
   if (!u.enabled) return 'Not switched on yet';
   const left = Math.max(0, u.limit - u.used);
-  return left ? `${left} question${left === 1 ? '' : 's'} left today` : 'Daily limit reached';
+  const il = Math.max(0, (u.img_limit || 0) - (u.img_used || 0));
+  return `${left} chats · ${il} images left today`;
 }
 async function aiRefreshUsage() {
   try { AI.usage = await api('ai/usage'); } catch {}
@@ -1431,8 +1445,49 @@ function closeAI(back = true) {
   if (back && window.top === window && history.state && history.state.ai) { try { history.back(); } catch {} }
   renderChats();
 }
+// Image requests: the 🎨 button, or messages like "draw a…" / "create an image of…"
+const IMG_RX = /^(?:please\s+|pls\s+|abeg\s+)?(?:can you\s+|could you\s+|help me\s+)?(?:draw|paint|sketch|(?:generate|create|make|design|produce|give me)\b.{0,40}\b(?:image|picture|pic|photo|drawing|illustration|logo|art|artwork|poster|flyer|wallpaper|avatar|portrait|painting|sticker|banner|cartoon))\b/i;
+AI.imgMode = false;
+function setImgMode(on) {
+  AI.imgMode = on;
+  $('#aiImgBtn').classList.toggle('on', on);
+  $('#aiText').placeholder = on ? 'Describe the image to create…' : 'Ask Yarn AI anything…';
+  if (on && !touch) $('#aiText').focus();
+}
+$('#aiImgBtn').onclick = () => setImgMode(!AI.imgMode);
+async function aiImage(prompt) {
+  prompt = prompt.trim(); if (!prompt || AI.busy) return;
+  AI.list.push({ role: 'user', content: '🎨 ' + prompt, t: Date.now() });
+  const ans = { role: 'assistant', content: '', prompt, pendingImg: true, t: Date.now() };
+  AI.list.push(ans); aiRender();
+  const idx = AI.list.length - 1, box = $('#aiMsgs');
+  AI.busy = true; $('#aiSend').classList.add('busy'); $('#aiSub').textContent = 'creating image…';
+  AI.ctrl = new AbortController();
+  try {
+    const res = await fetch('/api/ai/image', {
+      method: 'POST', signal: AI.ctrl.signal,
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + S.token },
+      body: JSON.stringify({ prompt }),
+    });
+    if (!res.ok) { let e = {}; try { e = await res.json(); } catch {} throw new Error(e.error || 'Could not create the image. Check your connection.'); }
+    let blob;
+    if ((res.headers.get('content-type') || '').includes('json')) blob = await (await fetch((await res.json()).image)).blob();
+    else blob = await res.blob();
+    ans.image = await compress(blob, 1024);
+  } catch (e) {
+    ans.content = e.name === 'AbortError' ? '_(stopped)_' : '⚠️ ' + e.message;
+    ans.error = e.name !== 'AbortError';
+  }
+  delete ans.pendingImg;
+  AI.busy = false; AI.ctrl = null; $('#aiSend').classList.remove('busy');
+  const el = box.querySelector(`[data-ai="${idx}"]`); if (el) el.outerHTML = aiBubble(ans, idx);
+  box.scrollTop = box.scrollHeight;
+  if (ans.error) AI.list = AI.list.filter((m) => m !== ans);
+  aiSave(); aiRefreshUsage();
+}
 async function aiAsk(text) {
   text = text.trim(); if (!text || AI.busy) return;
+  if (AI.imgMode || IMG_RX.test(text)) return aiImage(text);
   AI.list.push({ role: 'user', content: text, t: Date.now() });
   const ans = { role: 'assistant', content: '', t: Date.now() };
   AI.list.push(ans); aiRender();
@@ -1489,6 +1544,12 @@ $('#aiForm').addEventListener('submit', (e) => {
 });
 $('#aiMsgs').addEventListener('click', async (e) => {
   const chip = e.target.closest('[data-q]'); if (chip) return aiAsk(chip.dataset.q);
+  const pic = e.target.closest('.ai-img'); if (pic) return showPhoto(pic.dataset.src);
+  const sh = e.target.closest('[data-imgshare]');
+  if (sh) return shareMsg({ type: 'image', id: Date.now(), text: '', local_url: AI.list[+sh.dataset.imgshare].image });
+  const sd = e.target.closest('[data-imgsend]');
+  if (sd) return forwardSheet({ type: 'image', text: '', local_url: AI.list[+sd.dataset.imgsend].image, meta: {} }, { fwd: false, title: 'Send image to…' });
+  const ag = e.target.closest('[data-again]'); if (ag) return aiImage(AI.list[+ag.dataset.again].prompt);
   const cp = e.target.closest('[data-copy]');
   if (cp) { try { await navigator.clipboard.writeText(AI.list[+cp.dataset.copy].content); toast('Copied'); } catch { toast('Could not copy'); } }
 });
