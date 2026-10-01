@@ -282,7 +282,8 @@ document.addEventListener('keydown', (e) => {
 $('#lockCancel').onclick = () => { hidePinPad(); openSettings(); };
 $('#lockForgot').onclick = () => {
   if (!confirm('Log out to reset your PIN? You can log back in with your password.')) return;
-  PIN.clear(); S.locked = false; hidePinPad(); api('logout', { body: {} }).catch(() => {}); signOutLocal();
+  PIN.clear(); S.locked = false; hidePinPad();
+  disablePushOnThisDevice().then((endpoint) => api('logout', { body: { endpoint } }).catch(() => {})).finally(signOutLocal);
 };
 function lockApp() {
   if (!PIN.get() || S.locked) return;
@@ -302,7 +303,7 @@ function setupPin() {
   showPinPad({ title: 'Choose a 4-digit PIN', cancel: true, handler: async (first) => {
     showPinPad({ title: 'Type the same PIN again', cancel: true, handler: async (second) => {
       if (first !== second) { setupPin(); pinMsg("PINs didn't match. Choose a PIN again."); return false; }
-      await PIN.set(first); hidePinPad(); toast('App lock is on 🔒'); openSettings(); return true;
+      await PIN.set(first); saveSession(); hidePinPad(); toast('App lock is on 🔒'); openSettings(); return true;
     } });
     return true;
   } });
@@ -316,9 +317,69 @@ const isIOS = () => /iphone|ipad|ipod/i.test(UA) || (navigator.platform === 'Mac
 const isAndroid = () => /android/i.test(UA);
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; });
 window.addEventListener('appinstalled', () => { installEvt = null; hideModal(); toast('Yarn is installed 🎉'); });
-if ('serviceWorker' in navigator && location.protocol === 'https:' && window.top === window) {
+const swOK = 'serviceWorker' in navigator && location.protocol === 'https:' && window.top === window;
+if (swOK) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
-  navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.open && S.token) openChat(e.data.open); });
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (!e.data || !S.token) return;
+    if (e.data.open) openChat(e.data.open);
+    if (e.data.poke) loadChats();
+  });
+}
+
+/* ================= push notifications ================= */
+// The server sends an empty "wake up" push; the phone then fetches what's new and decrypts the preview itself.
+const pushSupported = () => swOK && 'PushManager' in window && 'Notification' in window;
+function urlB64(s) { const p = '='.repeat((4 - (s.length % 4)) % 4); return unb64((s + p).replace(/-/g, '+').replace(/_/g, '/')); }
+async function saveSession() {
+  if (!S.me || !S.token) return;
+  await keyStore.set('session', { token: S.token, userId: S.me.id, hidePreview: !!PIN.get() });
+}
+async function pushState() {
+  if (!pushSupported()) return isIOS() && !isStandalone() ? 'install' : 'unsupported';
+  if (Notification.permission === 'denied') return 'denied';
+  if (Notification.permission !== 'granted') return 'off';
+  const reg = await navigator.serviceWorker.getRegistration();
+  const sub = reg && (await reg.pushManager.getSubscription());
+  return sub ? 'on' : 'off';
+}
+async function enablePush(quiet = false) {
+  try {
+    if (!pushSupported()) { if (!quiet) toast(isIOS() ? 'Install Yarn to your Home Screen first.' : 'This browser does not support notifications.'); return false; }
+    const perm = Notification.permission === 'granted' ? 'granted' : quiet ? Notification.permission : await Notification.requestPermission();
+    if (perm !== 'granted') { if (!quiet) toast('Notifications were not allowed.'); return false; }
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      const { key } = await api('push/key');
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64(key) });
+    }
+    await api('push/subscribe', { body: sub.toJSON() });
+    await saveSession();
+    return true;
+  } catch (e) { if (!quiet) toast('Could not turn on notifications: ' + e.message); return false; }
+}
+async function disablePushOnThisDevice() {
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg && (await reg.pushManager.getSubscription());
+    if (sub) { const endpoint = sub.endpoint; await sub.unsubscribe(); return endpoint; }
+  } catch {}
+  return null;
+}
+async function maybeAskPush() {
+  const st = await pushState();
+  if (st === 'on' || st === 'denied' || st === 'unsupported') return;
+  if (Date.now() - LS.get('yarn_push_ask', 0) < DAY_MS) return;
+  setTimeout(() => {
+    if (!S.token || S.locked || S.chatId || !$('#modal').classList.contains('hidden')) return;
+    if (st === 'install') return; // iPhone: the install guide comes first
+    showModal(`<div class="profile-top"><div class="big-emoji">🔔</div><h2>Don't miss a message</h2>
+      <p class="muted">Turn on notifications to get alerts for new messages, even when Yarn is closed. Previews are unlocked on your phone, so they stay private.</p></div>
+      <div class="row"><button class="btn ghost" id="paLater">Not now</button><button class="btn" id="paGo">Turn on</button></div>`);
+    $('#paLater').onclick = () => { LS.set('yarn_push_ask', Date.now()); hideModal(); };
+    $('#paGo').onclick = async () => { hideModal(); if (await enablePush()) { toast('Notifications are on 🔔'); } else LS.set('yarn_push_ask', Date.now()); };
+  }, 2500);
 }
 const SHARE_IC = '<svg class="inl" viewBox="0 0 24 24"><path d="M12 3v12M8 7l4-4 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 11H5v10h14V11h-1" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
 const DOTS_IC = '<svg class="inl" viewBox="0 0 24 24"><circle cx="12" cy="5" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="19" r="2" fill="currentColor"/></svg>';
@@ -391,6 +452,7 @@ function notifyMsg(c) {
   sounds.bell();
   if (navigator.vibrate) try { navigator.vibrate(60); } catch {}
   if (document.hidden || S.locked) {
+    if (S.pushOn) return; // the push notification from the server handles it
     if ('Notification' in window && Notification.permission === 'granted') {
       const t = S.locked || PIN.get() ? APP_NAME : title, b = S.locked || PIN.get() ? 'New message' : text;
       navigator.serviceWorker?.getRegistration?.().then((reg) => {
@@ -445,6 +507,7 @@ $('#authForm').addEventListener('submit', async (e) => {
 function saveMe(u) { S.me = u; LS.set('yarn_me2', u); drawMe(); }
 function signOutLocal() {
   if (S.me) keyStore.del('id-' + S.me.id);
+  keyStore.del('session'); S.pushOn = false;
   KEYS = null; pairCache.clear(); mediaURLs.clear(); previewCache.clear();
   S.token = null; S.me = null; S.known = null; S.chats = []; S.chatsKey = ''; S.locked = false; S.modalLocked = false;
   LS.del('yarn_t2'); LS.del('yarn_me2');
@@ -541,6 +604,7 @@ function renderChats() {
   const total = S.chats.reduce((a, c) => a + (c.unread || 0), 0);
   document.title = total ? `(${total}) ${APP_NAME}` : APP_NAME;
   const b = $('#chatsBadge'); b.textContent = total > 99 ? '99+' : total; b.classList.toggle('hidden', !total);
+  try { if (navigator.setAppBadge) total ? navigator.setAppBadge(total) : navigator.clearAppBadge(); } catch {}
 }
 $('#chatList').addEventListener('click', (e) => { const li = e.target.closest('.chat-item'); if (li) openChat(+li.dataset.id); });
 $('#filter').addEventListener('input', renderChats);
@@ -1296,7 +1360,6 @@ function drawMe() { if (S.me) $('#meBtn').innerHTML = avatarHTML(S.me.display_na
 $('#meBtn').onclick = () => openSettings();
 function openSettings() {
   const me = S.me;
-  const notifOk = 'Notification' in window && Notification.permission === 'granted';
   showModal(`<div class="profile-top big-av">
       <div class="av-edit">${avatarHTML(me.display_name, me.username, '', me.avatar_key)}<button id="avBtn" aria-label="Change photo">📷</button></div>
       <h2>${esc(me.display_name)}</h2><p class="muted">@${esc(me.username)}</p>
@@ -1319,8 +1382,8 @@ function openSettings() {
     <p class="sec">Notifications</p>
     <label class="setting"><div><strong>Pop-up alerts</strong><span>Show a banner for new messages</span></div><input type="checkbox" class="switch" id="sPop" ${S.prefs.popups ? 'checked' : ''}></label>
     <label class="setting"><div><strong>Sounds</strong><span>Bell for new messages, soft sounds in chats</span></div><input type="checkbox" class="switch" id="sSnd" ${S.prefs.sound ? 'checked' : ''}></label>
-    ${'Notification' in window ? `<div class="setting"><div><strong>Alerts when Yarn is in the background</strong><span>${notifOk ? 'On for this device' : 'Needs your permission'}</span></div>${notifOk ? '<span class="tag ok">On</span>' : '<button class="btn sm" id="sNotif">Turn on</button>'}</div>` : ''}
-    <button class="linkbtn" id="sTest">🔔 Test notification sound</button>
+    <div class="setting"><div><strong>Push notifications</strong><span id="pushTxt">Checking…</span></div><span id="pushBtn"></span></div>
+    <button class="linkbtn" id="sTest">🔔 Test sound</button>
 
     <p class="sec">App lock</p>
     <div class="setting"><div><strong>PIN lock</strong><span>${PIN.get() ? 'On. Yarn asks for your PIN when you open it.' : 'Ask for a 4-digit PIN when Yarn opens'}</span></div>
@@ -1356,7 +1419,7 @@ function openSettings() {
     hideModal();
     showPinPad({ title: 'Enter your PIN to turn it off', cancel: true, handler: async (pin) => {
       if (!(await PIN.check(pin))) { pinMsg('Wrong PIN.'); return false; }
-      PIN.clear(); hidePinPad(); toast('App lock is off'); openSettings(); return true;
+      PIN.clear(); saveSession(); hidePinPad(); toast('App lock is off'); openSettings(); return true;
     } });
   };
   const pAf = $('#pinAfter'); if (pAf) pAf.onclick = (e) => {
@@ -1382,11 +1445,20 @@ function openSettings() {
   $('#sPop').onchange = (e) => { S.prefs.popups = e.target.checked; LS.set('yarn_prefs', S.prefs); };
   $('#sSnd').onchange = (e) => { S.prefs.sound = e.target.checked; LS.set('yarn_prefs', S.prefs); };
   $('#sTest').onclick = () => { const was = S.prefs.sound; S.prefs.sound = true; sounds.bell(); S.prefs.sound = was; banner('Yarn', 'This is how new messages will pop up 👋', avatarHTML('Yarn', 'yarn', 'sm'), null); };
-  const sn = $('#sNotif');
-  if (sn) sn.onclick = async () => {
-    try { const p = await Notification.requestPermission(); toast(p === 'granted' ? 'Background alerts are on' : 'Permission was not given'); openSettings(); }
-    catch { toast('This browser does not support it'); }
-  };
+  pushState().then((st) => {
+    const txt = $('#pushTxt'), btn = $('#pushBtn'); if (!txt) return;
+    const msg = {
+      on: 'On for this device, even when Yarn is closed',
+      off: 'Get alerts when Yarn is closed',
+      denied: 'Blocked. Allow notifications for this site in your browser or phone settings.',
+      install: 'On iPhone, install Yarn to your Home Screen first',
+      unsupported: 'Not supported in this browser',
+    }[st];
+    txt.textContent = msg;
+    if (st === 'on') { btn.innerHTML = '<button class="btn sm ghost" id="pushTest">Send test</button>'; $('#pushTest').onclick = async () => { try { await api('push/test', { body: {} }); toast('Test sent. Lock your phone or switch apps to see it.'); } catch (e) { toast(e.message); } }; }
+    else if (st === 'off') { btn.innerHTML = '<button class="btn sm" id="pushOn">Turn on</button>'; $('#pushOn').onclick = async () => { if (await enablePush()) { S.pushOn = true; toast('Notifications are on 🔔'); openSettings(); } }; }
+    else if (st === 'install') { btn.innerHTML = '<button class="btn sm" id="pushInst">How?</button>'; $('#pushInst').onclick = showInstallGuide; }
+  });
   $('#pSave').onclick = async () => {
     const b = $('#pSave'), cur = $('#pCur').value, nw = $('#pNew').value;
     if (nw.length < 6) return toast('New password must be at least 6 characters.');
@@ -1404,7 +1476,7 @@ function openSettings() {
     } catch (e) { toast(e.message); }
     b.disabled = false; b.textContent = 'Change password';
   };
-  $('#logout').onclick = async () => { hideModal(); try { await api('logout', { body: {} }); } catch {} signOutLocal(); };
+  $('#logout').onclick = async () => { hideModal(); const endpoint = await disablePushOnThisDevice(); try { await api('logout', { body: { endpoint } }); } catch {} signOutLocal(); };
   api('blocks').then((d) => {
     const bl = $('#bl'); if (!bl) return;
     bl.innerHTML = d.users.length ? d.users.map((u) => userRow(u, `<button class="btn sm ghost" data-unb="${u.id}">Unblock</button>`)).join('') : '<p class="muted pad">No one. Nice.</p>';
@@ -1449,7 +1521,11 @@ async function startApp() {
   if (PIN.get()) lockApp();
   await ensureKeys();
   if (!S.token) return;
-  loadChats(); loadPadis(); loadVibes();
+  saveSession();
+  await loadChats(); loadPadis(); loadVibes();
+  const deep = +new URLSearchParams(location.search).get('chat');
+  if (deep) { history.replaceState(null, '', '/'); openChat(deep); }
+  pushState().then(async (st) => { if (st === 'on' || (st === 'off' && Notification.permission === 'granted')) S.pushOn = await enablePush(true); else maybeAskPush(); });
   clearInterval(vibeTimer); vibeTimer = setInterval(loadVibes, 30000);
   try { const d = await api('me'); saveMe(d.user); } catch {}
   maybeShowInstall();

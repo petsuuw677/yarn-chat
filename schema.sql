@@ -62,3 +62,6 @@ CREATE TABLE IF NOT EXISTS blocks (blocker_id INTEGER NOT NULL, blocked_id INTEG
 CREATE TABLE IF NOT EXISTS vibes (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, type TEXT NOT NULL, body TEXT, bg TEXT, media_key TEXT, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_vibes_user ON vibes(user_id, expires_at);
 CREATE TABLE IF NOT EXISTS vibe_views (vibe_id INTEGER NOT NULL, viewer_id INTEGER NOT NULL, viewed_at INTEGER NOT NULL, PRIMARY KEY (vibe_id, viewer_id));
+CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, user_id INTEGER NOT NULL, p256dh TEXT, auth TEXT, created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_push_user ON push_subs(user_id);
+CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL);
