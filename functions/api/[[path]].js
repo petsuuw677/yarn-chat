@@ -283,6 +283,38 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
     return J({ ok: true, done: c.c >= bl.chunks });
   }
 
+  // ---------- Yarn AI (Cloudflare Workers AI; chats are kept on the user's device, never stored here) ----------
+  const AI_LIMIT = parseInt(env.AI_DAILY_LIMIT || '40');
+  const today = new Date(t).toISOString().slice(0, 10);
+  if (m === 'GET' && p === 'ai/usage') {
+    const u = await DB.prepare('SELECT count FROM ai_usage WHERE user_id=? AND day=?').bind(me.id, today).first();
+    return J({ enabled: !!env.AI, used: u ? u.count : 0, limit: AI_LIMIT });
+  }
+  if (m === 'POST' && p === 'ai/chat') {
+    if (!env.AI) return err('Yarn AI is not switched on yet. The app owner needs to add the Workers AI binding.', 503);
+    const b = await body();
+    const msgs = (Array.isArray(b.messages) ? b.messages : []).slice(-12)
+      .filter((x) => x && ['user', 'assistant'].includes(x.role) && typeof x.content === 'string' && x.content.trim())
+      .map((x) => ({ role: x.role, content: x.content.slice(0, 4000) }));
+    if (!msgs.length || msgs[msgs.length - 1].role !== 'user') return err('Ask a question first.');
+    const used = await DB.prepare('SELECT count FROM ai_usage WHERE user_id=? AND day=?').bind(me.id, today).first();
+    if (used && used.count >= AI_LIMIT) return err(`You've used today's ${AI_LIMIT} Yarn AI messages. They reset tomorrow. 🌙`, 429);
+    await DB.prepare('INSERT INTO ai_usage (user_id,day,count) VALUES (?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET count=count+1').bind(me.id, today).run();
+    const system = `You are Yarn AI, a warm, helpful assistant inside Yarn, a private chat app used mostly in Nigeria. `
+      + `Give clear, practical answers. Keep replies fairly short unless asked for detail. Use short paragraphs and simple bullet lists when helpful. `
+      + `If the user writes in Nigerian Pidgin, reply in Pidgin. You cannot see the user's chats, contacts or files, only this conversation. `
+      + `The user's name is ${me.display_name}. Today is ${new Date(t).toDateString()}.`;
+    const models = [env.AI_MODEL || '@cf/meta/llama-3.1-8b-instruct-fast', '@cf/meta/llama-3.1-8b-instruct', '@cf/meta/llama-3.2-3b-instruct'];
+    for (const model of models) {
+      try {
+        const stream = await env.AI.run(model, { messages: [{ role: 'system', content: system }, ...msgs], stream: true, max_tokens: 900 });
+        return new Response(stream, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store' } });
+      } catch {}
+    }
+    await DB.prepare('UPDATE ai_usage SET count=MAX(count-1,0) WHERE user_id=? AND day=?').bind(me.id, today).run();
+    return err('Yarn AI is busy right now. Please try again in a minute.', 503);
+  }
+
   // ---------- Calls: 1-to-1 voice & video (WebRTC; audio/video flow phone-to-phone, encrypted) ----------
   if (m === 'GET' && p === 'calls/ice') {
     const stun = [{ urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302'] }];
