@@ -25,9 +25,10 @@ async function hashPass(password, saltHex) {
   return btoa(s);
 }
 
-async function newSession(DB, userId) {
+async function newSession(DB, userId, device) {
   const token = randHex(32);
-  await DB.prepare('INSERT INTO sessions (token,user_id,created_at) VALUES (?,?,?)').bind(token, userId, now()).run();
+  await DB.prepare('INSERT INTO sessions (token,user_id,created_at,device,last_active) VALUES (?,?,?,?,?)')
+    .bind(token, userId, now(), String(device || 'Unknown device').slice(0, 60), now()).run();
   return token;
 }
 
@@ -36,7 +37,7 @@ async function getUser(DB, req) {
   const token = h.startsWith('Bearer ') ? h.slice(7) : '';
   if (!token) return null;
   const u = await DB.prepare(
-    'SELECT u.id,u.username,u.display_name,u.last_seen,u.about,u.avatar_key,u.seen_privacy,u.public_key,u.enc_priv FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?'
+    'SELECT u.id,u.username,u.display_name,u.last_seen,u.about,u.avatar_key,u.seen_privacy,u.public_key,u.enc_priv,s.last_active AS s_active FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?'
   ).bind(token).first();
   return u ? { ...u, token } : null;
 }
@@ -207,7 +208,7 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
     const r = await DB.prepare('INSERT INTO users (username,display_name,pass_hash,salt,created_at,last_seen,public_key,enc_priv,pw_v) VALUES (?,?,?,?,?,?,?,?,2)')
       .bind(username, display, hash, salt, t, t, b.public_key, b.enc_priv).run();
     const id = r.meta.last_row_id;
-    const token = await newSession(DB, id);
+    const token = await newSession(DB, id, b.device);
     return J({ token, user: meOut({ id, username, display_name: display, public_key: b.public_key }), enc_priv: b.enc_priv });
   }
   if (m === 'POST' && p === 'login') {
@@ -221,14 +222,35 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
       const salt = randHex(16);
       await DB.prepare('UPDATE users SET pass_hash=?,salt=?,pw_v=2 WHERE id=?').bind(await hashPass(String(b.password || ''), salt), salt, u.id).run();
     } else if ((await hashPass(String(b.password || ''), u.salt)) !== u.pass_hash) return err('Wrong username or password.', 401);
-    const token = await newSession(DB, u.id);
+    const token = await newSession(DB, u.id, b.device);
     return J({ token, user: meOut(u), enc_priv: u.enc_priv || null });
   }
 
   // ---------- Everything below needs login ----------
   const me = await getUser(DB, req);
   if (!me) return err('Please log in.', 401);
-  if (t - me.last_seen > 60000) await DB.prepare('UPDATE users SET last_seen=? WHERE id=?').bind(t, me.id).run();
+  if (t - me.last_seen > 60000 || t - (me.s_active || 0) > 60000)
+    await DB.batch([
+      DB.prepare('UPDATE users SET last_seen=? WHERE id=?').bind(t, me.id),
+      DB.prepare('UPDATE sessions SET last_active=? WHERE token=?').bind(t, me.token),
+    ]);
+
+  // ---------- Devices (logged-in sessions) ----------
+  if (m === 'GET' && p === 'sessions') {
+    const r = await DB.prepare('SELECT rowid AS id, device, created_at, last_active, token=? AS current FROM sessions WHERE user_id=? ORDER BY current DESC, last_active DESC').bind(me.token, me.id).all();
+    return J({ sessions: r.results.map((x) => ({ ...x, current: !!x.current })), now: t });
+  }
+  if (m === 'POST' && p === 'sessions/revoke') {
+    const b = await body();
+    const all = !!b.others;
+    const where = all ? 'user_id=? AND token<>?' : 'user_id=? AND rowid=? AND token<>?';
+    const args = all ? [me.id, me.token] : [me.id, parseInt(b.id), me.token];
+    await DB.batch([
+      DB.prepare(`DELETE FROM push_subs WHERE token IN (SELECT token FROM sessions WHERE ${where})`).bind(...args),
+      DB.prepare(`DELETE FROM sessions WHERE ${where}`).bind(...args),
+    ]);
+    return J({ ok: true });
+  }
 
   if (m === 'GET' && p === 'me') return J({ user: meOut(me), enc_priv: me.enc_priv || null });
 
@@ -267,8 +289,8 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
     const b = await body();
     const ep = String(b.endpoint || ''), k = b.keys || {};
     if (!/^https:\/\//.test(ep) || ep.length > 1000) return err('Invalid subscription.');
-    await DB.prepare('INSERT INTO push_subs (endpoint,user_id,p256dh,auth,created_at) VALUES (?,?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id, p256dh=excluded.p256dh, auth=excluded.auth')
-      .bind(ep, me.id, String(k.p256dh || ''), String(k.auth || ''), t).run();
+    await DB.prepare('INSERT INTO push_subs (endpoint,user_id,p256dh,auth,created_at,token) VALUES (?,?,?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id, p256dh=excluded.p256dh, auth=excluded.auth, token=excluded.token')
+      .bind(ep, me.id, String(k.p256dh || ''), String(k.auth || ''), t, me.token).run();
     return J({ ok: true });
   }
   if (m === 'POST' && p === 'push/unsubscribe') {
@@ -369,6 +391,7 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
     const salt = randHex(16);
     await DB.batch([
       DB.prepare('UPDATE users SET pass_hash=?,salt=?,enc_priv=COALESCE(?,enc_priv),pw_v=2 WHERE id=?').bind(await hashPass(next, salt), salt, b.enc_priv || null, me.id),
+      DB.prepare('DELETE FROM push_subs WHERE user_id=? AND token IS NOT NULL AND token<>?').bind(me.id, me.token),
       DB.prepare('DELETE FROM sessions WHERE user_id=? AND token<>?').bind(me.id, me.token),
     ]);
     return J({ ok: true });
