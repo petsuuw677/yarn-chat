@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yarn install check</title>
+<link rel="manifest" href="/manifest.json">
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 20px; background: #0F1B2D; color: #fff; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { color: #94A3B8; margin: 0 0 18px; font-size: 14px; }
+  .row { background: #172234; border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; display: flex; gap: 10px; }
+  .ic { font-size: 20px; line-height: 1.2; }
+  .t { font-weight: 600; }
+  .d { color: #94A3B8; font-size: 13px; margin-top: 3px; word-break: break-word; }
+  button { width: 100%; padding: 14px; border: 0; border-radius: 14px; font-weight: 700; font-size: 16px; color: #fff; background: linear-gradient(135deg,#FF7A3D,#F0386B); margin-top: 8px; }
+  button:disabled { opacity: .5; }
+  pre { white-space: pre-wrap; font-size: 11px; color: #94A3B8; background: #172234; padding: 10px; border-radius: 12px; }
+</style>
+</head>
+<body>
+<h1>Yarn install check</h1>
+<p class="sub">Take a screenshot of this page and send it.</p>
+<div id="out"></div>
+<button id="inst" disabled>Waiting for Chrome's install offer…</button>
+<pre id="ua"></pre>
+<script>
+const out = document.getElementById('out');
+function row(ok, title, detail) {
+  out.insertAdjacentHTML('beforeend', `<div class="row"><div class="ic">${ok === null ? '⏳' : ok ? '✅' : '❌'}</div><div><div class="t">${title}</div><div class="d">${detail || ''}</div></div></div>`);
+}
+const imgOk = (src) => new Promise((r) => { const i = new Image(); i.onload = () => r(i.naturalWidth + 'x' + i.naturalHeight); i.onerror = () => r(null); i.src = src + '?t=' + Date.now(); });
+let evt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault(); evt = e;
+  const b = document.getElementById('inst'); b.disabled = false; b.textContent = 'Install Yarn now';
+});
+document.getElementById('inst').onclick = async () => { if (evt) { evt.prompt(); await evt.userChoice; } };
+(async () => {
+  const ua = navigator.userAgent;
+  document.getElementById('ua').textContent = ua;
+  const inApp = /FBAN|FBAV|Instagram|WhatsApp|Line\/|; wv\)|OPR|Opera Mini|OPiOS|UCBrowser|MiuiBrowser|SamsungBrowser/i.test(ua);
+  const chrome = /Chrome\/\d+/.test(ua) && !/Edg|OPR|SamsungBrowser|; wv\)/.test(ua);
+  row(location.protocol === 'https:', 'Secure link (https)', location.origin);
+  row(chrome && !inApp, 'Using the real Chrome app', inApp ? 'This looks like an in-app or other browser. Open the link in Chrome itself.' : chrome ? 'Chrome detected' : 'Not Chrome. Install works best in Chrome.');
+  const standalone = matchMedia('(display-mode: standalone)').matches;
+  if (standalone) row(true, 'Already installed', 'You opened this from the installed app.');
+  let man = null;
+  try {
+    const r = await fetch('/manifest.json?t=' + Date.now(), { cache: 'no-store' });
+    const txt = await r.text();
+    try { man = JSON.parse(txt); row(r.ok, 'manifest.json loads', r.ok ? 'OK' : 'Status ' + r.status); }
+    catch { row(false, 'manifest.json is valid', 'The file is not valid JSON. Replace it with the version I sent.'); }
+  } catch (e) { row(false, 'manifest.json loads', e.message); }
+  if (man) {
+    row(!!(man.name || man.short_name), 'App name', man.name || man.short_name || 'missing');
+    row(['standalone', 'fullscreen', 'minimal-ui'].includes(man.display), 'Display mode', man.display || 'missing');
+    row(!!man.start_url, 'Start link', man.start_url || 'missing');
+    const icons = man.icons || [];
+    row(icons.length > 0, 'Icons listed in manifest', icons.length ? icons.map((i) => i.src).join(', ') : 'No icons. This is the old manifest. Replace it.');
+    for (const i of icons) { const s = await imgOk(i.src); row(!!s, 'Icon file ' + i.src, s ? 'Loads, ' + s : 'NOT FOUND. Upload the icons folder.'); }
+  }
+  const linked = !!document.querySelector('link[rel=manifest]');
+  try {
+    const home = await (await fetch('/?t=' + Date.now(), { cache: 'no-store' })).text();
+    row(/rel="manifest"/.test(home), 'Main page links the manifest', /rel="manifest"/.test(home) ? 'OK' : 'index.html is missing the manifest line. Upload the latest index.html.');
+    row(/sw\.js/.test(await (await fetch('/app.js?t=' + Date.now(), { cache: 'no-store' })).text()), 'App registers the service worker', 'Checks the latest app.js is uploaded');
+  } catch {}
+  try {
+    const r = await fetch('/sw.js?t=' + Date.now(), { cache: 'no-store' });
+    const ok = r.ok && /addEventListener/.test(await r.text());
+    row(ok, 'sw.js file', ok ? 'Found' : 'NOT FOUND. Upload sw.js to the main folder.');
+  } catch (e) { row(false, 'sw.js file', e.message); }
+  if ('serviceWorker' in navigator) {
+    try {
+      const reg = await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.ready;
+      row(true, 'Service worker running', reg.scope);
+    } catch (e) { row(false, 'Service worker running', e.message); }
+  } else row(false, 'Service worker supported', 'This browser does not support it');
+  setTimeout(() => {
+    if (!evt && !standalone) row(null, "Chrome's install offer", 'Not received yet. If everything above is ✅, tap ⋮ then "Add to home screen" and choose "Install". Chrome may also need you to visit a few times.');
+    else if (evt) row(true, "Chrome's install offer", 'Ready. Tap the button below.');
+  }, 4000);
+})();
+</script>
+</body>
+</html>
