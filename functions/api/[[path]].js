@@ -141,6 +141,13 @@ async function pushToUser(DB, userId, origin) {
   }));
 }
 
+// Videos and voice notes are encrypted on the phone, then stored in pieces (the database keeps up to ~2 MB per row)
+const BLOB_TYPES = ['video', 'voice'];
+const delBlob = (DB, key) => [
+  DB.prepare('DELETE FROM blob_chunks WHERE key=?').bind(key),
+  DB.prepare('DELETE FROM blobs WHERE key=?').bind(key),
+];
+
 const MSG_SELECT = `SELECT m.id,m.sender_id,m.type,m.body,m.media_key,m.created_at,m.reply_to,u.display_name AS sender_name,
   u.public_key AS sender_key,
   r.type AS reply_type, r.body AS reply_body, r.sender_id AS reply_sender, ru.display_name AS reply_name, ru.public_key AS reply_sender_key
@@ -170,6 +177,19 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
     if (!row) return new Response('Not found', { status: 404 });
     const bin = Uint8Array.from(atob(row.data), (c) => c.charCodeAt(0));
     return new Response(bin, { headers: { 'content-type': row.mime, 'cache-control': 'public, max-age=31536000, immutable' } });
+  }
+
+  // ---------- Big files (download is public by random key; contents are encrypted) ----------
+  if (m === 'GET' && parts[0] === 'blob' && parts[1]) {
+    const cache = { 'cache-control': 'public, max-age=31536000, immutable' };
+    if (parts[2] === undefined) {
+      const b = await DB.prepare('SELECT chunks,size FROM blobs WHERE key=? AND done=1').bind(parts[1]).first();
+      if (!b) return err('Not found', 404);
+      return new Response(JSON.stringify(b), { headers: { 'content-type': 'application/json', ...cache } });
+    }
+    const row = await DB.prepare('SELECT data FROM blob_chunks WHERE key=? AND n=?').bind(parts[1], parseInt(parts[2])).first();
+    if (!row) return new Response('Not found', { status: 404 });
+    return new Response(row.data, { headers: { 'content-type': 'text/plain', ...cache } });
   }
 
   // ---------- Sign up / log in ----------
@@ -212,6 +232,35 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
 
   if (m === 'GET' && p === 'me') return J({ user: meOut(me), enc_priv: me.enc_priv || null });
 
+  // ---------- Upload big files in pieces ----------
+  if (m === 'POST' && p === 'blob/start') {
+    const b = await body();
+    const chunks = parseInt(b.chunks), size = parseInt(b.size);
+    if (!chunks || chunks < 1 || chunks > 12 || !size || size > 23000000) return err('That file is too large. The limit is 16 MB.');
+    const used = await DB.prepare('SELECT COALESCE(SUM(size),0) AS s FROM blobs WHERE owner_id=? AND created_at>?').bind(me.id, t - DAY).first();
+    if (used.s + size > 200000000) return err('Daily upload limit reached. Try again tomorrow.');
+    if (Math.random() < 0.05) {
+      await DB.batch([
+        DB.prepare('DELETE FROM blob_chunks WHERE key IN (SELECT key FROM blobs WHERE done=0 AND created_at<?)').bind(t - DAY),
+        DB.prepare('DELETE FROM blobs WHERE done=0 AND created_at<?').bind(t - DAY),
+      ]);
+    }
+    const key = randHex(16);
+    await DB.prepare('INSERT INTO blobs (key,owner_id,size,chunks,done,created_at) VALUES (?,?,?,?,0,?)').bind(key, me.id, size, chunks, t).run();
+    return J({ key });
+  }
+  if (m === 'POST' && parts[0] === 'blob' && parts[1] && /^\d+$/.test(parts[2] || '')) {
+    const bl = await DB.prepare('SELECT owner_id,chunks FROM blobs WHERE key=?').bind(parts[1]).first();
+    const n = parseInt(parts[2]);
+    if (!bl || bl.owner_id !== me.id || n >= bl.chunks) return err('Upload not found.', 404);
+    const data = await req.text();
+    if (!data || data.length > 1950000) return err('Piece too large.');
+    await DB.prepare('INSERT OR REPLACE INTO blob_chunks (key,n,data) VALUES (?,?,?)').bind(parts[1], n, data).run();
+    const c = await DB.prepare('SELECT COUNT(*) AS c FROM blob_chunks WHERE key=?').bind(parts[1]).first();
+    if (c.c >= bl.chunks) await DB.prepare('UPDATE blobs SET done=1 WHERE key=?').bind(parts[1]).run();
+    return J({ ok: true, done: c.c >= bl.chunks });
+  }
+
   // ---------- Push notifications ----------
   if (m === 'GET' && p === 'push/key') return J({ key: (await vapidKeys(DB)).pub });
   if (m === 'POST' && p === 'push/subscribe') {
@@ -235,9 +284,9 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
   if (m === 'GET' && p === 'push/peek') {
     const r = await DB.prepare(`SELECT m.id, m.chat_id, m.type, m.body, m.created_at, m.sender_id, u.display_name AS sender_name, u.public_key AS sender_key,
         c.is_group, c.name AS chat_name, (SELECT nickname FROM padis pp WHERE pp.owner_id=?1 AND pp.padi_id=m.sender_id) AS nick,
-        (SELECT COUNT(*) FROM messages mx WHERE mx.chat_id=c.id AND mx.id>mem.last_read_id AND mx.sender_id<>?1 AND mx.type IN ('text','image')) AS unread
+        (SELECT COUNT(*) FROM messages mx WHERE mx.chat_id=c.id AND mx.id>mem.last_read_id AND mx.sender_id<>?1 AND mx.type IN ('text','image','video','voice')) AS unread
       FROM members mem JOIN chats c ON c.id=mem.chat_id
-      JOIN messages m ON m.id=(SELECT MAX(id) FROM messages mx WHERE mx.chat_id=c.id AND mx.sender_id<>?1 AND mx.type IN ('text','image'))
+      JOIN messages m ON m.id=(SELECT MAX(id) FROM messages mx WHERE mx.chat_id=c.id AND mx.sender_id<>?1 AND mx.type IN ('text','image','video','voice'))
       JOIN users u ON u.id=m.sender_id
       WHERE mem.user_id=?1 AND m.id>mem.last_read_id
       ORDER BY m.id DESC LIMIT 5`).bind(me.id).all();
@@ -266,7 +315,9 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
       DB.prepare('DELETE FROM padis WHERE owner_id=? OR padi_id=?').bind(me.id, me.id),
       DB.prepare('DELETE FROM blocks WHERE blocker_id=? OR blocked_id=?').bind(me.id, me.id),
       DB.prepare('DELETE FROM vibe_views WHERE viewer_id=? OR vibe_id IN (SELECT id FROM vibes WHERE user_id=?)').bind(me.id, me.id),
-      DB.prepare('DELETE FROM media WHERE key IN (SELECT media_key FROM vibes WHERE user_id=? AND media_key IS NOT NULL)').bind(me.id),
+      DB.prepare("DELETE FROM media WHERE key IN (SELECT media_key FROM vibes WHERE user_id=? AND type='image')").bind(me.id),
+      DB.prepare("DELETE FROM blob_chunks WHERE key IN (SELECT media_key FROM vibes WHERE user_id=? AND type='video')").bind(me.id),
+      DB.prepare("DELETE FROM blobs WHERE key IN (SELECT media_key FROM vibes WHERE user_id=? AND type='video')").bind(me.id),
       DB.prepare('DELETE FROM vibes WHERE user_id=?').bind(me.id),
       DB.prepare('DELETE FROM media WHERE key=?').bind(me.avatar_key || '-'),
       DB.prepare("UPDATE users SET username=?,display_name='Deleted account',about='',avatar_key=NULL,pass_hash='',salt='',enc_priv=NULL,seen_privacy='nobody',deleted=1 WHERE id=?")
@@ -392,7 +443,9 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
   if (m === 'GET' && p === 'vibes') {
     if (Math.random() < 0.05) {
       await DB.batch([
-        DB.prepare('DELETE FROM media WHERE key IN (SELECT media_key FROM vibes WHERE expires_at<? AND media_key IS NOT NULL)').bind(t),
+        DB.prepare("DELETE FROM media WHERE key IN (SELECT media_key FROM vibes WHERE expires_at<? AND type='image')").bind(t),
+        DB.prepare("DELETE FROM blob_chunks WHERE key IN (SELECT media_key FROM vibes WHERE expires_at<? AND type='video')").bind(t),
+        DB.prepare("DELETE FROM blobs WHERE key IN (SELECT media_key FROM vibes WHERE expires_at<? AND type='video')").bind(t),
         DB.prepare('DELETE FROM vibe_views WHERE vibe_id IN (SELECT id FROM vibes WHERE expires_at<?)').bind(t),
         DB.prepare('DELETE FROM vibes WHERE expires_at<?').bind(t),
       ]);
@@ -419,7 +472,11 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
     const text = isEnvelope(b.body) ? String(b.body).slice(0, 120000) : String(b.body || '').trim().slice(0, 700);
     const stmts = [];
     let type = 'text', key = null, bg = VIBE_BGS.includes(b.bg) ? b.bg : 'g0';
-    if (b.type === 'image') {
+    if (b.type === 'video') {
+      const bl = await DB.prepare('SELECT owner_id,done FROM blobs WHERE key=?').bind(String(b.blob_key || '')).first();
+      if (!bl || bl.owner_id !== me.id || !bl.done) return err('The upload did not finish. Please try again.');
+      type = 'video'; key = String(b.blob_key);
+    } else if (b.type === 'image') {
       let mime, data;
       if (b.enc_data) {
         if (!B64.test(b.enc_data) || b.enc_data.length > 1800000) return err('That image is too large.');
@@ -440,7 +497,7 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
   }
   if (parts[0] === 'vibes' && /^\d+$/.test(parts[1] || '')) {
     const vid = +parts[1];
-    const v = await DB.prepare('SELECT id,user_id,media_key FROM vibes WHERE id=? AND expires_at>?').bind(vid, t).first();
+    const v = await DB.prepare('SELECT id,user_id,type,media_key FROM vibes WHERE id=? AND expires_at>?').bind(vid, t).first();
     if (!v) return err('This vibe has expired.', 404);
     if (m === 'POST' && parts[2] === 'view') {
       if (v.user_id !== me.id && (await canSeeVibes(DB, me.id, v.user_id)))
@@ -458,7 +515,10 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
         DB.prepare('DELETE FROM vibe_views WHERE vibe_id=?').bind(vid),
         DB.prepare('DELETE FROM vibes WHERE id=?').bind(vid),
       ];
-      if (v.media_key) stmts.push(DB.prepare('DELETE FROM media WHERE key=?').bind(v.media_key));
+      if (v.media_key) {
+        if (v.type === 'video') stmts.push(...delBlob(DB, v.media_key));
+        else stmts.push(DB.prepare('DELETE FROM media WHERE key=?').bind(v.media_key));
+      }
       await DB.batch(stmts);
       return J({ ok: true });
     }
@@ -613,7 +673,11 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
       let type = 'text', mediaKey = null;
       const text = isEnvelope(b.body) ? String(b.body).slice(0, 120000) : String(b.body || '').trim().slice(0, 4000);
       const stmts = [];
-      if (b.type === 'image') {
+      if (BLOB_TYPES.includes(b.type)) {
+        const bl = await DB.prepare('SELECT owner_id,done FROM blobs WHERE key=?').bind(String(b.blob_key || '')).first();
+        if (!bl || bl.owner_id !== me.id || !bl.done) return err('The upload did not finish. Please try again.');
+        type = b.type; mediaKey = String(b.blob_key);
+      } else if (b.type === 'image') {
         let mime, data;
         if (b.enc_data) {
           if (!B64.test(b.enc_data) || b.enc_data.length > 1800000) return err('That image is too large.');
@@ -651,7 +715,10 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
         DB.prepare("UPDATE messages SET type='deleted', body='', media_key=NULL WHERE id=?").bind(mid),
         DB.prepare('INSERT INTO deletions (chat_id,message_id,at) VALUES (?,?,?)').bind(id, mid, t),
       ];
-      if (msg.media_key) stmts.push(DB.prepare('DELETE FROM media WHERE key=?').bind(msg.media_key));
+      if (msg.media_key) {
+        if (BLOB_TYPES.includes(msg.type)) stmts.push(...delBlob(DB, msg.media_key));
+        else stmts.push(DB.prepare('DELETE FROM media WHERE key=?').bind(msg.media_key));
+      }
       await DB.batch(stmts);
       return J({ ok: true });
     }
