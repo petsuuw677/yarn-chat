@@ -411,7 +411,7 @@ async function maybeAskPush() {
   if (st === 'on' || st === 'denied' || st === 'unsupported') return;
   if (Date.now() - LS.get('yarn_push_ask', 0) < DAY_MS) return;
   setTimeout(() => {
-    if (!S.token || S.locked || S.chatId || !$('#modal').classList.contains('hidden')) return;
+    if (!S.token || S.locked || S.chatId || AI.open || CALL.status !== 'idle' || !$('#modal').classList.contains('hidden')) return;
     if (st === 'install') return; // iPhone: the install guide comes first
     showModal(`<div class="profile-top"><div class="big-emoji">🔔</div><h2>Don't miss a message</h2>
       <p class="muted">Turn on notifications to get alerts for new messages, even when Yarn is closed. Previews are unlocked on your phone, so they stay private.</p></div>
@@ -446,7 +446,7 @@ function maybeShowInstall() {
   if (isStandalone() || window.top !== window) return;
   if (Date.now() - LS.get('yarn_install_dismiss', 0) < 3 * DAY_MS) return;
   setTimeout(() => {
-    if (S.token && !S.locked && !S.chatId && $('#modal').classList.contains('hidden') && $('#story').classList.contains('hidden')) showInstallGuide();
+    if (S.token && !S.locked && !S.chatId && !AI.open && CALL.status === 'idle' && $('#modal').classList.contains('hidden') && $('#story').classList.contains('hidden') && $('#cam').classList.contains('hidden')) showInstallGuide();
   }, 6000);
 }
 
@@ -562,7 +562,7 @@ function signOutLocal() {
   LS.del('yarn_t2'); LS.del('yarn_me2');
   if (!$('#lock').classList.contains('hidden')) hidePinPad();
   clearTimeout(listTimer); clearTimeout(msgTimer); clearInterval(vibeTimer);
-  closeChat(false); hideModal();
+  closeChat(false); hideModal(); if (AI.open) closeAI(false);
   $('#app').classList.add('hidden'); $('#auth').classList.remove('hidden');
 }
 
@@ -628,13 +628,18 @@ function renderChats() {
     (!q || chatTitle(c).toLowerCase().includes(q) || (c.other_username || '').includes(q)) &&
     (f === 'all' || (f === 'unread' && c.unread) || (f === 'groups' && c.is_group)));
   const ul = $('#chatList');
+  const lastAI = (LS.get(aiKey(), []).slice(-1)[0] || {}).content;
+  const aiRow = f === 'all' && (!q || 'yarn ai assistant bot'.includes(q))
+    ? `<li class="chat-item ai-item ${AI.open ? 'active' : ''}" data-ai="1"><span class="avatar ai-av">✨</span>
+        <div class="ci-main"><div class="ci-top"><span class="ci-name">Yarn AI <span class="ai-badge">AI</span></span></div>
+        <div class="ci-bot"><span class="ci-last">${esc(lastAI ? lastAI.replace(/[*#`_]/g, '').slice(0, 80) : 'Ask me anything ✨')}</span></div></div></li>` : '';
   if (!S.chats.length) {
-    ul.innerHTML = `<li class="list-empty"><strong>No chats yet</strong>Find a friend by their exact username and say hi.<br><button class="btn" id="emptyNew">Start a chat</button></li>`;
+    ul.innerHTML = aiRow + `<li class="list-empty"><strong>No chats yet</strong>Find a friend by their exact username and say hi.<br><button class="btn" id="emptyNew">Start a chat</button></li>`;
     $('#emptyNew').onclick = openNewChat;
   } else if (!list.length) {
-    ul.innerHTML = `<li class="list-empty">${q ? 'No chats match your search.' : f === 'unread' ? 'You are all caught up. 🎉' : 'No group chats yet. Tap the people icon at the top to create one.'}</li>`;
+    ul.innerHTML = aiRow + `<li class="list-empty">${q ? 'No chats match your search.' : f === 'unread' ? 'You are all caught up. 🎉' : 'No group chats yet. Tap the people icon at the top to create one.'}</li>`;
   } else {
-    ul.innerHTML = list.map((c) => {
+    ul.innerHTML = aiRow + list.map((c) => {
       const name = chatTitle(c);
       let last = 'Say hi 👋';
       if (c.last_id) {
@@ -661,7 +666,7 @@ function renderChats() {
   const b = $('#chatsBadge'); b.textContent = total > 99 ? '99+' : total; b.classList.toggle('hidden', !total);
   try { if (navigator.setAppBadge) total ? navigator.setAppBadge(total) : navigator.clearAppBadge(); } catch {}
 }
-$('#chatList').addEventListener('click', (e) => { const li = e.target.closest('.chat-item'); if (li) openChat(+li.dataset.id); });
+$('#chatList').addEventListener('click', (e) => { const li = e.target.closest('.chat-item'); if (!li) return; if (li.dataset.ai) openAI(); else openChat(+li.dataset.id); });
 $('#filter').addEventListener('input', renderChats);
 $('#filters').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
@@ -674,6 +679,7 @@ $('#filters').addEventListener('click', (e) => {
 let msgTimer = null, lastMarked = 0;
 async function openChat(id, push = true) {
   hideModal();
+  if (AI.open) closeAI(false);
   if (S.chatId === id) { if (isPhone()) document.body.classList.add('in-chat'); return; }
   clearTimeout(msgTimer); lastMarked = 0;
   Object.assign(S, { chatId: id, chat: null, members: [], loaded: [], lastId: 0, firstId: 0, noOlder: false, ids: new Set(), readUpto: 0, since: 0, typing: [], seen: 0, blockedByMe: false, blockedMe: false });
@@ -685,7 +691,7 @@ async function openChat(id, push = true) {
   document.body.classList.add('in-chat');
   updateComposer();
   if (push && isPhone() && window.top === window) { try { history.pushState({ chat: id }, ''); } catch {} }
-  $$('.chat-item').forEach((li) => li.classList.toggle('active', +li.dataset.id === id));
+  $$('.chat-item').forEach((li) => li.classList.toggle('active', !li.dataset.ai && +li.dataset.id === id));
   if (!touch) $('#text').focus();
   await loadChatDetails();
   await pollMessages(true);
@@ -1354,6 +1360,145 @@ async function shareMsg(m) {
     toast('Could not share this message.');
   }
 }
+
+/* ================= Yarn AI (chatbot) ================= */
+// Conversations stay on this device. Each question is sent to the AI to answer, but nothing is stored on the server.
+const AI = { open: false, list: [], busy: false, ctrl: null, usage: null };
+const aiKey = () => 'yarn_ai_' + (S.me ? S.me.id : 0);
+function aiLoad() { AI.list = LS.get(aiKey(), []); }
+function aiSave() { LS.set(aiKey(), AI.list.slice(-100)); }
+function md(src) {
+  let s = esc(src || '');
+  const blocks = [];
+  s = s.replace(/```[\w-]*\n?([\s\S]*?)(```|$)/g, (_, c) => { blocks.push(`<pre><code>${c.replace(/\n$/, '')}</code></pre>`); return `\u0000${blocks.length - 1}\u0000`; });
+  s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>').replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, '$1<i>$2</i>');
+  s = s.replace(/^#{1,4} (.*)$/gm, '<h4>$1</h4>');
+  s = s.replace(/(^|\n)((?:[-*•] .*(?:\n|$))+)/g, (_, pre, b) => pre + '<ul>' + b.trim().split('\n').map((l) => '<li>' + l.replace(/^[-*•] /, '') + '</li>').join('') + '</ul>');
+  s = s.replace(/(^|\n)((?:\d+[.)] .*(?:\n|$))+)/g, (_, pre, b) => pre + '<ol>' + b.trim().split('\n').map((l) => '<li>' + l.replace(/^\d+[.)] /, '') + '</li>').join('') + '</ol>');
+  s = s.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/\n/g, '<br>').replace(/<br>(<\/?(?:ul|ol|li|h4))/g, '$1').replace(/(<\/(?:ul|ol|h4)>)<br>/g, '$1');
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[i]);
+}
+const AI_SUGGEST = [
+  ['💌', 'Write a sweet birthday message for my padi'],
+  ['🗣️', 'Translate "I go soon come" into proper English'],
+  ['💡', 'Give me 5 small business ideas I can start with ₦50k'],
+  ['✍️', 'Help me write a polite reminder to a customer who owes me'],
+];
+function aiBubble(m, i) {
+  if (m.role === 'user') return `<div class="m mine first ai-q" data-ai="${i}"><div class="txt">${linkify(m.content)}</div></div>`;
+  const body = m.content ? md(m.content) : '<span class="ai-dots"><i></i><i></i><i></i></span>';
+  return `<div class="m first ai-a ${m.error ? 'ai-err' : ''}" data-ai="${i}"><div class="who ai-who">✨ Yarn AI</div><div class="txt md">${body}</div>
+    ${m.content && !m.error ? `<div class="ai-acts"><button data-copy="${i}">📋 Copy</button></div>` : ''}</div>`;
+}
+function aiRender() {
+  const box = $('#aiMsgs');
+  if (!AI.list.length) {
+    box.innerHTML = `<div class="ai-empty"><div class="ai-orb">✨</div><h2>Hi ${esc((S.me.display_name || '').split(' ')[0])}, I'm Yarn AI</h2>
+      <p>Ask me anything: writing, ideas, translations, explanations. You can talk to me in Pidgin too.</p>
+      <div class="ai-chips">${AI_SUGGEST.map(([e, t]) => `<button data-q="${esc(t)}"><span>${e}</span>${esc(t)}</button>`).join('')}</div>
+      <p class="ai-note">🔒 Your AI chats stay on this device. Yarn AI can't see your other chats.</p></div>`;
+  } else box.innerHTML = AI.list.map(aiBubble).join('');
+  box.scrollTop = box.scrollHeight;
+}
+function aiUsageText() {
+  const u = AI.usage; if (!u) return 'Ask me anything';
+  if (!u.enabled) return 'Not switched on yet';
+  const left = Math.max(0, u.limit - u.used);
+  return left ? `${left} question${left === 1 ? '' : 's'} left today` : 'Daily limit reached';
+}
+async function aiRefreshUsage() {
+  try { AI.usage = await api('ai/usage'); } catch {}
+  $('#aiSub').textContent = AI.busy ? 'typing…' : aiUsageText();
+}
+function openAI(push = true) {
+  if (S.chatId) closeChat(false);
+  AI.open = true; aiLoad();
+  $('#empty').classList.add('hidden'); $('#chatView').classList.add('hidden'); $('#aiView').classList.remove('hidden');
+  document.body.classList.add('in-chat');
+  $$('.chat-item').forEach((li) => li.classList.toggle('active', !!li.dataset.ai));
+  if (push && isPhone() && window.top === window) { try { history.pushState({ ai: 1 }, ''); } catch {} }
+  aiRender(); aiRefreshUsage();
+  if (!touch) $('#aiText').focus();
+}
+function closeAI(back = true) {
+  if (!AI.open) return;
+  AI.open = false;
+  $('#aiView').classList.add('hidden'); $('#empty').classList.remove('hidden');
+  document.body.classList.remove('in-chat');
+  $$('.chat-item.active').forEach((li) => li.classList.remove('active'));
+  if (back && window.top === window && history.state && history.state.ai) { try { history.back(); } catch {} }
+  renderChats();
+}
+async function aiAsk(text) {
+  text = text.trim(); if (!text || AI.busy) return;
+  AI.list.push({ role: 'user', content: text, t: Date.now() });
+  const ans = { role: 'assistant', content: '', t: Date.now() };
+  AI.list.push(ans); aiRender();
+  AI.busy = true; $('#aiSend').classList.add('busy'); $('#aiSub').textContent = 'typing…';
+  const box = $('#aiMsgs'), idx = AI.list.length - 1;
+  const paint = () => {
+    const el = box.querySelector(`[data-ai="${idx}"]`); if (!el) return;
+    const near = box.scrollHeight - box.scrollTop - box.clientHeight < 160;
+    el.outerHTML = aiBubble(ans, idx);
+    if (near) box.scrollTop = box.scrollHeight;
+  };
+  AI.ctrl = new AbortController();
+  try {
+    const res = await fetch('/api/ai/chat', {
+      method: 'POST', signal: AI.ctrl.signal,
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + S.token },
+      body: JSON.stringify({ messages: AI.list.slice(-13, -1).map(({ role, content }) => ({ role, content })) }),
+    });
+    if (!res.ok) { let e = {}; try { e = await res.json(); } catch {} throw new Error(e.error || 'Yarn AI could not answer. Check your connection.'); }
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = '', last = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+        if (!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if (!data || data === '[DONE]') continue;
+        try { const j = JSON.parse(data); const piece = j.response ?? j.choices?.[0]?.delta?.content ?? ''; if (piece) ans.content += piece; } catch {}
+      }
+      if (Date.now() - last > 60) { paint(); last = Date.now(); }
+    }
+    if (!ans.content.trim()) throw new Error('Yarn AI had nothing to say. Try asking another way.');
+  } catch (e) {
+    if (e.name === 'AbortError') { if (!ans.content) ans.content = '_(stopped)_'; }
+    else { ans.content = '⚠️ ' + e.message; ans.error = true; }
+  }
+  AI.busy = false; AI.ctrl = null; $('#aiSend').classList.remove('busy');
+  if (ans.error) AI.list.splice(idx, 1, ans);
+  paint(); aiSave(); aiRefreshUsage();
+  if (ans.error) { AI.list = AI.list.filter((m) => !m.error); aiSave(); }
+}
+const aiTa = $('#aiText');
+aiTa.addEventListener('input', () => { aiTa.style.height = 'auto'; aiTa.style.height = Math.min(aiTa.scrollHeight, 140) + 'px'; });
+aiTa.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !touch) { e.preventDefault(); $('#aiForm').requestSubmit(); } });
+$('#aiForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (AI.busy) { AI.ctrl && AI.ctrl.abort(); return; }
+  const q = aiTa.value; aiTa.value = ''; aiTa.style.height = 'auto';
+  aiAsk(q);
+});
+$('#aiMsgs').addEventListener('click', async (e) => {
+  const chip = e.target.closest('[data-q]'); if (chip) return aiAsk(chip.dataset.q);
+  const cp = e.target.closest('[data-copy]');
+  if (cp) { try { await navigator.clipboard.writeText(AI.list[+cp.dataset.copy].content); toast('Copied'); } catch { toast('Could not copy'); } }
+});
+$('#aiBack').onclick = () => closeAI(true);
+$('#aiNew').onclick = () => {
+  if (AI.busy) return;
+  if (AI.list.length && !confirm('Start a new chat? This clears your Yarn AI conversation on this device.')) return;
+  AI.list = []; aiSave(); aiRender();
+};
+window.addEventListener('popstate', () => { if (AI.open) closeAI(false); });
 
 /* ================= voice & video calls (1-to-1, WebRTC) ================= */
 // Sound and picture travel directly between the two phones (or via an encrypted relay). The server only

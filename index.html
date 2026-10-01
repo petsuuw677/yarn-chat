@@ -163,6 +163,30 @@
         <button class="send ready" id="recSend" aria-label="Send voice message"><svg viewBox="0 0 24 24"><path d="M4.5 12.5L20 4l-5 16-3-6.5z" fill="currentColor"/></svg></button>
       </div>
     </div>
+    <div id="aiView" class="chat ai-chat hidden">
+      <header class="chat-head">
+        <button class="icon back" id="aiBack" aria-label="Back to chats">
+          <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="chat-title">
+          <span class="avatar ai-av">✨</span>
+          <span class="chat-title-text"><strong>Yarn AI</strong><small id="aiSub">Ask me anything</small></span>
+        </div>
+        <button class="icon" id="aiNew" aria-label="New AI chat" title="New chat">
+          <svg viewBox="0 0 24 24"><path d="M4 20l4-1 11-11-3-3L5 16z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/></svg>
+        </button>
+      </header>
+      <div id="aiMsgs" class="msgs"></div>
+      <form id="aiForm" class="composer">
+        <div class="compose-box">
+          <textarea id="aiText" rows="1" placeholder="Ask Yarn AI anything…" aria-label="Ask Yarn AI"></textarea>
+        </div>
+        <button class="send ready" id="aiSend" aria-label="Send">
+          <svg class="ic-send" viewBox="0 0 24 24"><path d="M4.5 12.5L20 4l-5 16-3-6.5z" fill="currentColor"/></svg>
+          <svg class="ic-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor"/></svg>
+        </button>
+      </form>
+    </div>
   </main>
 </section>
 
