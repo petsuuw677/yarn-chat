@@ -241,6 +241,7 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
       JOIN users u ON u.id=m.sender_id
       WHERE mem.user_id=?1 AND m.id>mem.last_read_id
       ORDER BY m.id DESC LIMIT 5`).bind(me.id).all();
+    await DB.prepare('UPDATE members SET delivered_id=(SELECT MAX(id) FROM messages WHERE chat_id=members.chat_id) WHERE user_id=? AND delivered_id<(SELECT COALESCE(MAX(id),0) FROM messages WHERE chat_id=members.chat_id)').bind(me.id).run();
     return J({ messages: r.results });
   }
 
@@ -465,6 +466,7 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
 
   // ---------- Chats ----------
   if (m === 'GET' && p === 'chats') {
+    await DB.prepare('UPDATE members SET delivered_id=(SELECT MAX(id) FROM messages WHERE chat_id=members.chat_id) WHERE user_id=? AND delivered_id<(SELECT COALESCE(MAX(id),0) FROM messages WHERE chat_id=members.chat_id)').bind(me.id).run();
     const r = await DB.prepare(`
       SELECT c.id, c.is_group, c.name, c.last_msg_at,
         o.id AS other_id, o.display_name AS other_name, o.username AS other_username, o.last_seen AS other_seen,
@@ -474,6 +476,8 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
         (SELECT nickname FROM padis p WHERE p.owner_id=?1 AND p.padi_id=o.id) AS other_nick,
         lm.id AS last_id, lm.type AS last_type, lm.body AS last_body, lm.sender_id AS last_sender,
         su.display_name AS last_sender_name, su.public_key AS last_sender_key, o.deleted AS other_deleted,
+        (SELECT MIN(mm.last_read_id) FROM members mm WHERE mm.chat_id=c.id AND mm.user_id<>?1) AS others_read,
+        (SELECT MIN(MAX(mm.delivered_id, mm.last_read_id)) FROM members mm WHERE mm.chat_id=c.id AND mm.user_id<>?1) AS others_delivered,
         (SELECT COUNT(*) FROM messages mx WHERE mx.chat_id=c.id AND mx.id>mem.last_read_id AND mx.sender_id<>?1 AND mx.type NOT IN ('system','deleted')) AS unread,
         (SELECT COUNT(*) FROM members mt WHERE mt.chat_id=c.id AND mt.user_id<>?1 AND mt.typing_until>?2) AS typing
       FROM members mem
@@ -573,7 +577,7 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
       else q = DB.prepare(MSG_SELECT + ' WHERE m.chat_id=? ORDER BY m.id DESC LIMIT 50').bind(id);
       const stmts = [
         q,
-        DB.prepare('SELECT MIN(last_read_id) AS read_upto FROM members WHERE chat_id=? AND user_id<>?').bind(id, me.id),
+        DB.prepare('SELECT user_id, last_read_id, MAX(delivered_id, last_read_id) AS delivered_id FROM members WHERE chat_id=? AND user_id<>?').bind(id, me.id),
         DB.prepare('SELECT u.display_name FROM members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=? AND m.user_id<>? AND m.typing_until>?').bind(id, me.id, t),
         DB.prepare('SELECT message_id FROM deletions WHERE chat_id=? AND at>?').bind(id, since),
       ];
@@ -586,9 +590,12 @@ async function route(req, DB, parts, waitUntil = (p) => p) {
       let rows = res[0].results;
       if (!after) rows = rows.reverse();
       const o = otherId ? res[4].results[0] : null;
+      const reads = res[1].results;
       return J({
         messages: rows,
-        read_upto: res[1].results[0]?.read_upto || 0,
+        reads,
+        read_upto: reads.length ? Math.min(...reads.map((x) => x.last_read_id)) : 0,
+        delivered_upto: reads.length ? Math.min(...reads.map((x) => x.delivered_id)) : 0,
         typing: res[2].results.map((x) => x.display_name),
         deleted: res[3].results.map((x) => x.message_id),
         seen: o ? (o.bl ? 0 : showSeen(o.last_seen, o.seen_privacy, o.has_me)) : 0,
