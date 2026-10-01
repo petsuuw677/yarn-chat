@@ -588,8 +588,13 @@ function renderChats() {
       const name = chatTitle(c);
       let last = 'Say hi 👋';
       if (c.last_id) {
-        const who = ['system', 'deleted'].includes(c.last_type) ? '' : c.last_sender === S.me.id ? 'You: ' : c.is_group ? (c.last_sender_name || '').split(' ')[0] + ': ' : '';
+        const mineLast = c.last_sender === S.me.id && !['system', 'deleted'].includes(c.last_type);
+        const who = ['system', 'deleted'].includes(c.last_type) || mineLast ? '' : c.is_group ? (c.last_sender_name || '').split(' ')[0] + ': ' : '';
         last = who + snippet(c.last_type, c.last_text);
+        if (mineLast) {
+          const st = c.others_read >= c.last_id ? 'read' : c.others_delivered >= c.last_id ? 'delivered' : 'sent';
+          c._tick = `<span class="ci-tick ${st}">${st === 'sent' ? TICK1 : TICK2}</span>`;
+        } else c._tick = '';
       }
       const typing = c.typing ? (c.is_group ? 'someone is typing…' : 'typing…') : '';
       const online = !c.is_group && isOnline(c.other_seen) ? 'online' : '';
@@ -597,7 +602,7 @@ function renderChats() {
         ${c.is_group ? avatarHTML(c.name, 'g' + c.id) : avatarHTML(name, c.other_username, online, c.other_avatar)}
         <div class="ci-main">
           <div class="ci-top"><span class="ci-name">${esc(name)}</span><span class="ci-time">${listTime(c.last_msg_at)}</span></div>
-          <div class="ci-bot"><span class="ci-last ${typing ? 'typing-txt' : ''}">${esc(typing || last)}</span>${c.unread ? `<span class="badge">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}</div>
+          <div class="ci-bot"><span class="ci-last ${typing ? 'typing-txt' : ''}">${typing ? '' : c._tick || ''}${esc(typing || last)}</span>${c.unread ? `<span class="badge">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}</div>
         </div></li>`;
     }).join('');
   }
@@ -696,7 +701,7 @@ async function pollMessages(first = false) {
     if (S.chatId !== id) return;
     await decryptAll(d.messages);
     if (S.chatId !== id) return;
-    S.serverNow = d.now; S.since = d.now; S.readUpto = d.read_upto; S.seen = d.seen; S.typing = d.typing || [];
+    S.serverNow = d.now; S.since = d.now; S.readUpto = d.read_upto; S.deliveredUpto = d.delivered_upto || 0; S.reads = d.reads || []; S.seen = d.seen; S.typing = d.typing || [];
     if (first) {
       S.noOlder = d.messages.length < 50;
       renderAll(d.messages);
@@ -709,7 +714,7 @@ async function pollMessages(first = false) {
       if (near) scrollBottom(true);
     }
     (d.deleted || []).forEach(markDeleted);
-    updateTicks(); updateHeader(); markRead(); hydrateImages();
+    updateTicks(); updateSeenLabel(); updateHeader(); markRead(); hydrateImages();
   } catch (e) { if (first) toast(e.message); }
   clearTimeout(msgTimer);
   if (S.chatId === id) msgTimer = setTimeout(pollMessages, document.hidden ? 8000 : 1500);
@@ -733,10 +738,10 @@ function msgHTML(m, prev, extra = '') {
     else if (m.media_key) img = `<span class="img" data-src="${media(m.media_key)}"><img src="${media(m.media_key)}" loading="lazy" alt="Photo"></span>`;
   }
   const txt = m.text ? `<div class="txt ${m.locked ? 'locked' : ''}">${m.locked ? esc(m.text) : linkify(m.text)}</div>` : '';
-  const read = mine && !m.pending && S.readUpto >= m.id;
-  const tick = mine ? (m.pending ? '<span class="clock">🕓</span>' : read ? TICK2 : TICK1) : '';
-  const cls = ['m', mine && 'mine', first && 'first', read && 'read', m.pending && 'pending', extra].filter(Boolean).join(' ');
-  return `<div class="${cls}" ${m.pending ? `data-temp="${m.temp}"` : `data-id="${m.id}"`}>${who}${quote}${img}${txt}<div class="meta"><span>${clock(m.created_at)}</span>${tick}</div></div>`;
+  const st = mine && !m.pending ? tickState(m.id) : '';
+  const tick = mine ? (m.pending ? '<span class="clock">🕓</span>' : st === 'sent' ? TICK1 : TICK2) : '';
+  const cls = ['m', mine && 'mine', first && 'first', st && 'st-' + st, m.pending && 'pending', extra].filter(Boolean).join(' ');
+  return `<div class="${cls}" ${m.pending ? `data-temp="${m.temp}"` : `data-id="${m.id}" data-st="${st}"`}>${who}${quote}${img}${txt}<div class="meta"><span>${clock(m.created_at)}</span>${tick}</div></div>`;
 }
 let lastRendered = null;
 function renderAll(list) {
@@ -754,7 +759,7 @@ function renderAll(list) {
   S.firstId = list.length ? list[0].id : 0;
   S.lastId = list.length ? list[list.length - 1].id : S.lastId;
   const ob = $('#olderBtn'); if (ob) ob.onclick = loadOlder;
-  hydrateImages();
+  hydrateImages(); updateSeenLabel();
 }
 function hydrateImages() {
   $$('#msgs .img[data-mk]:not([data-src])').forEach(async (el) => {
@@ -804,11 +809,51 @@ async function loadOlder() {
   S.loadingOlder = false;
 }
 $('#msgs').addEventListener('scroll', () => { if ($('#msgs').scrollTop < 40) loadOlder(); });
+// sent = server has it · delivered = reached their phone (data/Wi-Fi on) · read = they opened the chat
+function tickState(id) { return S.readUpto >= id ? 'read' : S.deliveredUpto >= id ? 'delivered' : 'sent'; }
 function updateTicks() {
-  $$('#msgs .m.mine[data-id]:not(.read):not(.deleted)').forEach((el) => {
-    if (+el.dataset.id <= S.readUpto) { el.classList.add('read'); const t = el.querySelector('.tick'); if (t) t.outerHTML = TICK2; }
+  $$('#msgs .m.mine[data-id]:not(.deleted)').forEach((el) => {
+    const st = tickState(+el.dataset.id);
+    if (el.dataset.st === st) return;
+    el.classList.remove('st-sent', 'st-delivered', 'st-read'); el.classList.add('st-' + st);
+    el.dataset.st = st;
+    const t = el.querySelector('.tick'); if (t) t.outerHTML = st === 'sent' ? TICK1 : TICK2;
   });
 }
+const EYE = '<svg class="eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>';
+// The label under your latest message: Sent / Delivered / Seen (groups: Seen by 2 of 4)
+function updateSeenLabel() {
+  $$('#msgs .seen-label').forEach((e) => e.remove());
+  const last = [...S.loaded].reverse().find((m) => m.type !== 'system');
+  if (!last || last.sender_id !== S.me.id || last.type === 'deleted') return;
+  const el = $(`#msgs [data-id="${last.id}"]`); if (!el) return;
+  const reads = S.reads || [];
+  let html, cls = '';
+  if (!S.chat || !S.chat.is_group) {
+    const st = tickState(last.id);
+    html = st === 'read' ? `${EYE} Seen` : st === 'delivered' ? 'Delivered' : 'Sent';
+    cls = st;
+  } else {
+    const seen = reads.filter((r) => r.last_read_id >= last.id).length;
+    const got = reads.filter((r) => r.delivered_id >= last.id).length;
+    if (reads.length && seen === reads.length) { html = `${EYE} Seen by everyone`; cls = 'read'; }
+    else if (seen) { html = `${EYE} Seen by ${seen} of ${reads.length}`; cls = 'read'; }
+    else html = got ? `Delivered to ${got} of ${reads.length}` : 'Sent';
+    cls += ' tap';
+  }
+  el.insertAdjacentHTML('afterend', `<button class="seen-label ${cls}" data-mid="${last.id}">${html}</button>`);
+}
+$('#msgs').addEventListener('click', (e) => {
+  const b = e.target.closest('.seen-label.tap'); if (!b) return;
+  const id = +b.dataset.mid, name = (uid) => nameOf(S.members.find((m) => m.id === uid));
+  const seen = S.reads.filter((r) => r.last_read_id >= id), got = S.reads.filter((r) => r.last_read_id < id && r.delivered_id >= id), wait = S.reads.filter((r) => r.delivered_id < id);
+  const list = (arr, empty) => arr.length ? `<div class="ulist">${arr.map((r) => { const u = S.members.find((m) => m.id === r.user_id) || { id: r.user_id, display_name: '?' }; return userRow(u); }).join('')}</div>` : `<p class="muted pad">${empty}</p>`;
+  showModal(`<h2>Message info</h2>
+    <p class="sec seen-sec">${EYE} Seen by ${seen.length}</p>${list(seen, 'No one yet')}
+    <p class="sec">✓✓ Delivered to ${got.length}</p>${list(got, 'No one else')}
+    ${wait.length ? `<p class="sec">✓ Not delivered yet · ${wait.length}</p>${list(wait, '')}` : ''}
+    <div class="row"><button class="btn ghost" data-close>Close</button></div>`);
+});
 function markRead() {
   if (document.hidden || !S.chatId || !S.lastId || S.lastId <= lastMarked) return;
   lastMarked = S.lastId;
@@ -859,12 +904,17 @@ function msgMenu(id) {
       ${canSend ? '<button data-a="reply">↩️ Reply</button>' : ''}
       ${m.text ? '<button data-a="copy">📋 Copy text</button>' : ''}
       ${m.type === 'image' ? '<button data-a="view">🖼️ View photo</button>' : ''}
+      ${mine ? `<button data-a="info">ℹ️ Info · ${{ read: 'Seen', delivered: 'Delivered', sent: 'Sent' }[tickState(id)]}</button>` : ''}
       ${mine ? '<button data-a="del" class="danger-txt">🗑️ Delete for everyone</button>' : ''}
     </div>`);
   $('#sheet .menu').onclick = async (e) => {
     const a = e.target.closest('button')?.dataset.a; if (!a) return;
     hideModal();
     if (a === 'reply') startReply(id);
+    if (a === 'info') {
+      if (S.chat && S.chat.is_group) { const fake = document.createElement('button'); fake.className = 'seen-label tap'; fake.dataset.mid = id; $('#msgs').appendChild(fake); fake.click(); fake.remove(); }
+      else { const st = tickState(id); toast(st === 'read' ? '👁 Seen by ' + nameOf(other()) : st === 'delivered' ? '✓✓ Delivered to their phone, not opened yet' : '✓ Sent. Their phone is offline or has no data right now.'); }
+    }
     if (a === 'copy') { try { await navigator.clipboard.writeText(m.text); toast('Copied'); } catch { toast('Could not copy'); } }
     if (a === 'view') { const el = $(`#msgs [data-id="${id}"] .img`); if (el && el.dataset.src) showPhoto(el.dataset.src); }
     if (a === 'del') {
@@ -941,6 +991,7 @@ async function send(payload, previewUrl) {
       if (el) el.outerHTML = html; else box.insertAdjacentHTML('beforeend', html);
       hydrateImages();
     }
+    updateSeenLabel();
     lastMarked = Math.max(lastMarked, d.message.id);
     setTimeout(loadChats, 300);
   } catch (e) {

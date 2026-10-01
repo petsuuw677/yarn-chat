@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS members (
   last_read_id INTEGER NOT NULL DEFAULT 0,
   joined_at INTEGER NOT NULL,
   typing_until INTEGER NOT NULL DEFAULT 0,
+  delivered_id INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (chat_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_members_user ON members(user_id);

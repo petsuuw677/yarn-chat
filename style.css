@@ -456,3 +456,20 @@ button { cursor: pointer; background: none; border: 0; }
 [data-theme=dark] .switch { background: #334155; }
 [data-theme=dark] .code span { background: #172234; }
 [data-theme=dark] .m .img.loading { background: linear-gradient(100deg, rgba(255,255,255,.05) 30%, rgba(255,255,255,.12) 50%, rgba(255,255,255,.05) 70%); background-size: 300% 100%; }
+
+/* ================= v4: clear delivery & seen ticks ================= */
+.m.mine .tick { width: 18px; height: 12px; }
+.m.mine.st-sent .tick { opacity: .6; }
+.m.mine.st-delivered .tick { opacity: 1; color: #fff; }
+.m.mine.st-read .tick { color: #67E8F9; opacity: 1; filter: drop-shadow(0 0 1.5px rgba(8,47,73,.9)); }
+.m.mine.st-read .meta { color: #fff; }
+.seen-label { align-self: flex-end; display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--muted); margin: 3px 4px 6px; padding: 2px 4px; cursor: default; }
+.seen-label.tap { cursor: pointer; }
+.seen-label.read { color: #0284C7; }
+.seen-label .eye { width: 16px; height: 16px; }
+.seen-sec { display: flex; align-items: center; gap: 6px; color: #0284C7 !important; }
+.seen-sec .eye { width: 16px; height: 16px; }
+.ci-tick { display: inline-flex; vertical-align: -2px; margin-right: 3px; color: var(--muted); }
+.ci-tick .tick { width: 18px; height: 12px; }
+.ci-tick.read { color: #0EA5E9; }
+[data-theme=dark] .seen-label.read, [data-theme=dark] .seen-sec { color: #38BDF8 !important; }
