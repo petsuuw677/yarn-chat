@@ -8,7 +8,11 @@ CREATE TABLE IF NOT EXISTS users (
   last_seen INTEGER NOT NULL DEFAULT 0,
   about TEXT DEFAULT '',
   avatar_key TEXT,
-  seen_privacy TEXT DEFAULT 'everyone'
+  seen_privacy TEXT DEFAULT 'everyone',
+  public_key TEXT,
+  enc_priv TEXT,
+  pw_v INTEGER NOT NULL DEFAULT 1,
+  deleted INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,

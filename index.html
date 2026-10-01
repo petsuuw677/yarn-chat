@@ -5,7 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="theme-color" content="#FFFFFF">
 <title>Yarn</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Yarn">
+<meta name="description" content="Private, end-to-end encrypted chats with just a username.">
 <link rel="manifest" href="/manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<script>try{var t=(JSON.parse(localStorage.getItem('yarn_prefs')||'{}').theme)||'system';var d=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.dataset.theme=d?'dark':'light';}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -18,7 +26,7 @@
   <div class="auth-hero">
     <div class="brand light">yarn<span class="dot"></span></div>
     <h1>Talk to your people. Fast.</h1>
-    <p>Private chats, group chats and vibes with just a username. No phone number needed.</p>
+    <p>End-to-end encrypted chats, groups and vibes with just a username. No phone number needed.</p>
     <div class="hero-chat" aria-hidden="true">
       <div class="hb in">Where you dey? 👀</div>
       <div class="hb out">On my way! 10 mins 🚗</div>
@@ -155,6 +163,22 @@
   <button class="st-zone st-prev" id="stPrev" aria-label="Previous"></button>
   <button class="st-zone st-next" id="stNext" aria-label="Next"></button>
   <div class="st-foot" id="stFoot"></div>
+</div>
+
+<div id="lock" class="lock hidden">
+  <div class="lock-box">
+    <div class="brand light">yarn<span class="dot"></span></div>
+    <p id="lockMsg" class="lock-msg">Enter your PIN</p>
+    <div class="pin-dots" id="pinDots"><i></i><i></i><i></i><i></i></div>
+    <div class="keypad" id="keypad">
+      <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+      <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+      <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+      <span></span><button data-k="0">0</button><button data-k="back" aria-label="Delete">⌫</button>
+    </div>
+    <button class="lock-link" id="lockForgot">Forgot PIN? Log out</button>
+    <button class="lock-link hidden" id="lockCancel">Cancel</button>
+  </div>
 </div>
 
 <button id="notif" class="notif" aria-live="polite"></button>
