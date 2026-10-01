@@ -139,16 +139,45 @@
             <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="9" cy="10" r="1.8" fill="currentColor"/><path d="M4 17l5-4 4 3 3-2 4 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
           </button>
           <textarea id="text" rows="1" placeholder="Type a message" aria-label="Message"></textarea>
+          <button type="button" class="attach" id="camBtn" aria-label="Camera" title="Camera">
+            <svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+          </button>
         </div>
-        <button class="send" id="sendBtn" aria-label="Send">
-          <svg viewBox="0 0 24 24"><path d="M4.5 12.5L20 4l-5 16-3-6.5z" fill="currentColor"/></svg>
+        <button class="send" id="sendBtn" aria-label="Send or record voice">
+          <svg class="ic-send" viewBox="0 0 24 24"><path d="M4.5 12.5L20 4l-5 16-3-6.5z" fill="currentColor"/></svg>
+          <svg class="ic-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         </button>
       </form>
+      <div id="recBar" class="rec-bar hidden">
+        <button class="icon rec-cancel" id="recCancel" aria-label="Delete recording">
+          <svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+        </button>
+        <span class="rec-dot"></span><span id="recTime" class="rec-time">0:00</span>
+        <span class="rec-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+        <button class="send ready" id="recSend" aria-label="Send voice message"><svg viewBox="0 0 24 24"><path d="M4.5 12.5L20 4l-5 16-3-6.5z" fill="currentColor"/></svg></button>
+      </div>
     </div>
   </main>
 </section>
 
-<input type="file" id="fileIn" accept="image/*" class="hidden-input">
+<input type="file" id="fileIn" accept="image/*,video/*" class="hidden-input">
+
+<div id="cam" class="cam hidden">
+  <video id="camVideo" autoplay playsinline muted></video>
+  <div class="cam-flash" id="camFlash"></div>
+  <div class="cam-top">
+    <button class="cam-btn" id="camClose" aria-label="Close camera">✕</button>
+    <span id="camTimer" class="cam-timer">0:00</span>
+    <button class="cam-btn" id="camFlip" aria-label="Switch camera"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M9 12.5a3 3 0 0 1 5.2-2M15 13.5a3 3 0 0 1-5.2 2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M14.5 8.8v1.9h-1.9M9.5 17.2v-1.9h1.9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+  </div>
+  <div class="cam-bottom">
+    <button class="cam-btn" id="camGallery" aria-label="Choose from gallery"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="9" cy="10" r="1.8" fill="currentColor"/><path d="M4 17l5-4 4 3 3-2 4 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></button>
+    <button class="shutter" id="camShutter" aria-label="Tap for photo, hold for video"><i></i></button>
+    <span class="cam-btn ghost"></span>
+  </div>
+  <p class="cam-hint" id="camHint">Tap for photo · Hold for video</p>
+  <div id="camPreview" class="cam-preview hidden"></div>
+</div>
 <div id="modal" class="modal hidden" role="dialog" aria-modal="true"><div class="sheet" id="sheet"></div></div>
 <div id="viewer" class="viewer hidden"><img id="viewerImg" alt=""></div>
 
@@ -157,12 +186,14 @@
   <div class="st-head">
     <span id="stAv"></span>
     <div class="st-who"><strong id="stName"></strong><small id="stTime"></small></div>
+    <button class="st-x hidden" id="stMute" aria-label="Sound on or off">🔊</button>
     <button class="st-x" id="stClose" aria-label="Close">✕</button>
   </div>
   <div class="st-body" id="stBody"></div>
   <button class="st-zone st-prev" id="stPrev" aria-label="Previous"></button>
   <button class="st-zone st-next" id="stNext" aria-label="Next"></button>
   <div class="st-foot" id="stFoot"></div>
+  <div class="st-paused">⏸ Paused · let go to continue</div>
 </div>
 
 <div id="lock" class="lock hidden">

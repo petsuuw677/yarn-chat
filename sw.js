@@ -1,5 +1,5 @@
 // Yarn service worker: install as an app, open fast, and show message notifications even when Yarn is closed.
-const SHELL = 'yarn-shell-v4';
+const SHELL = 'yarn-shell-v5';
 const MEDIA = 'yarn-media-v1';
 const FILES = ['/', '/style.css', '/app.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
@@ -13,7 +13,7 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
-  if (url.pathname.startsWith('/api/media/')) {
+  if (url.pathname.startsWith('/api/media/') || url.pathname.startsWith('/api/blob/')) {
     e.respondWith(caches.open(MEDIA).then(async (c) => {
       const hit = await c.match(e.request);
       if (hit) return hit;
@@ -102,7 +102,10 @@ async function onPush() {
     else {
       let plain = null;
       try { plain = await openPreview(m.body, m.sender_key, sess.userId, keyRec && keyRec.priv); } catch {}
-      text = m.type === 'image' ? '📷 Photo' + (plain ? ' · ' + plain : '') : plain || 'New message';
+      text = m.type === 'image' ? '📷 Photo' + (plain ? ' · ' + plain : '')
+        : m.type === 'video' ? '🎥 Video' + (plain ? ' · ' + plain : '')
+        : m.type === 'voice' ? '🎤 Voice message'
+        : plain || 'New message';
       if (m.unread > 1) text += `  (+${m.unread - 1} more)`;
     }
     if (m.is_group && !sess.hidePreview) text = who.split(' ')[0] + ': ' + text;

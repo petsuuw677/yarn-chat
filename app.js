@@ -74,7 +74,7 @@ function seenText(seen) {
   return 'last seen ' + (dayLabel(seen) === 'Today' ? 'today at ' + clock(seen) : dayLabel(seen).toLowerCase() + ' at ' + clock(seen));
 }
 const DAY_MS = 86400000;
-const snippet = (type, body) => (type === 'image' ? '📷 Photo' + (body ? ' · ' + body : '') : type === 'deleted' ? '🚫 Deleted message' : body || '');
+const snippet = (type, body) => (type === 'image' ? '📷 Photo' + (body ? ' · ' + body : '') : type === 'video' ? '🎥 Video' + (body ? ' · ' + body : '') : type === 'voice' ? '🎤 Voice message' : type === 'deleted' ? '🚫 Deleted message' : body || '');
 const TICK2 = '<svg class="tick" viewBox="0 0 18 12"><path d="M1 6.5l3.2 3.2L10 3.5M7.5 9.7L13.8 3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const TICK1 = '<svg class="tick" viewBox="0 0 18 12"><path d="M4 6.5l3.2 3.2L13 3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const VIBE_BGS = {
@@ -87,7 +87,7 @@ const VIBE_BGS = {
 // and that key is locked separately for each person in the chat. The server only sees scrambled data.
 const TE = new TextEncoder(), TD = new TextDecoder();
 function b64(buf) { const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf); let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); }
-const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+function unb64(s) { const bin = atob(s); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a; }
 const isEnv = (s) => typeof s === 'string' && s.startsWith('{"e2e"');
 const ECDH = { name: 'ECDH', namedCurve: 'P-256' };
 let KEYS = null;
@@ -132,12 +132,13 @@ function pairKey(pubJwk) {
   })());
   return pairCache.get(pubJwk);
 }
-async function seal(recipients, text) {
+async function seal(recipients, text, meta) {
   const ck = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
   const k = {};
   for (const r of recipients) if (r && r.public_key && !k[r.id]) k[r.id] = b64(await crypto.subtle.wrapKey('raw', ck, await pairKey(r.public_key), 'AES-KW'));
   const env = { e2e: 1, k };
   if (text) env.t = b64(await aesEncrypt(ck, TE.encode(text)));
+  if (meta) env.m = b64(await aesEncrypt(ck, TE.encode(JSON.stringify(meta))));
   return { body: JSON.stringify(env), ck };
 }
 async function unseal(body, senderPub) {
@@ -145,7 +146,9 @@ async function unseal(body, senderPub) {
   const w = env.k && env.k[S.me.id];
   if (!w || !senderPub || !KEYS) throw new Error('no key');
   const ck = await crypto.subtle.unwrapKey('raw', unb64(w), await pairKey(senderPub), 'AES-KW', { name: 'AES-GCM' }, false, ['decrypt']);
-  return { text: env.t ? TD.decode(await aesDecrypt(ck, unb64(env.t))) : '', ck };
+  let meta = null;
+  if (env.m) { try { meta = JSON.parse(TD.decode(await aesDecrypt(ck, unb64(env.m)))); } catch {} }
+  return { text: env.t ? TD.decode(await aesDecrypt(ck, unb64(env.t))) : '', ck, meta };
 }
 const canOpen = (body) => { if (!isEnv(body)) return true; try { const e = JSON.parse(body); return !!(e.k && e.k[S.me.id]); } catch { return false; } };
 const LOCKED = '🔒 Encrypted message';
@@ -154,7 +157,7 @@ async function decryptMsg(m) {
   m._d = true;
   if (m.type === 'system' || m.type === 'deleted') { m.text = m.body || ''; return m; }
   if (isEnv(m.body)) {
-    try { const r = await unseal(m.body, m.sender_key); m.text = r.text; m.ck = r.ck; }
+    try { const r = await unseal(m.body, m.sender_key); m.text = r.text; m.ck = r.ck; m.meta = r.meta || {}; }
     catch { m.text = LOCKED; m.locked = true; }
   } else m.text = m.body || '';
   if (m.reply_to && m.reply_type) {
@@ -176,6 +179,41 @@ function mediaURL(key, ck) {
   })());
   return mediaURLs.get(key);
 }
+// Videos and voice notes: encrypted here, uploaded in ~1.9 MB pieces, re-joined and decrypted on the other phone
+const CHUNK = 1900000;
+async function uploadBlob(bytes, onProgress) {
+  const text = b64(bytes), n = Math.ceil(text.length / CHUNK);
+  const { key } = await api('blob/start', { body: { size: text.length, chunks: n } });
+  for (let i = 0; i < n; i++) {
+    let ok = false, lastErr = 'Upload failed. Check your connection.';
+    for (let tryN = 0; tryN < 3 && !ok; tryN++) {
+      try {
+        const res = await fetch(`/api/blob/${key}/${i}`, { method: 'POST', headers: { authorization: 'Bearer ' + S.token, 'content-type': 'text/plain' }, body: text.slice(i * CHUNK, (i + 1) * CHUNK) });
+        if (res.ok) ok = true; else { try { lastErr = (await res.json()).error || lastErr; } catch {} }
+      } catch {}
+    }
+    if (!ok) throw new Error(lastErr);
+    onProgress && onProgress((i + 1) / n);
+  }
+  return key;
+}
+async function downloadBlob(key) {
+  const info = await (await fetch(`/api/blob/${key}`)).json();
+  if (!info.chunks) throw new Error('missing');
+  const parts = await Promise.all(Array.from({ length: info.chunks }, (_, i) => fetch(`/api/blob/${key}/${i}`).then((r) => { if (!r.ok) throw new Error('missing'); return r.text(); })));
+  return unb64(parts.join(''));
+}
+const blobURLs = new Map();
+function blobURL(key, ck, mime) {
+  if (!blobURLs.has(key)) {
+    const p = (async () => URL.createObjectURL(new Blob([await aesDecrypt(ck, await downloadBlob(key))], { type: mime || 'application/octet-stream' })))();
+    p.catch(() => blobURLs.delete(key));
+    blobURLs.set(key, p);
+  }
+  return blobURLs.get(key);
+}
+const fmtDur = (s) => `${Math.floor((s || 0) / 60)}:${pad(Math.floor((s || 0) % 60))}`;
+const fmtSize = (b) => (b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB');
 async function encryptImage(ck, dataUrl) { return b64(await aesEncrypt(ck, unb64(dataUrl.split(',')[1]))); }
 async function safetyCode(a, b) {
   const [x, y] = [a, b].sort();
@@ -732,16 +770,24 @@ function msgHTML(m, prev, extra = '') {
   }
   const quote = m.reply_to && m.reply_type ? `<div class="quote" data-jump="${m.reply_to}"><b>${esc(m.reply_sender === S.me.id ? 'You' : m.reply_name)}</b><span>${esc(snippet(m.reply_type, m.reply_text))}</span></div>` : '';
   let img = '';
+  const meta = m.meta || {};
   if (m.type === 'image' && !m.locked) {
     if (m.media_url) img = `<span class="img" data-src="${m.media_url}"><img src="${m.media_url}" alt="Photo"></span>`;
     else if (m.media_key && m.ck) img = `<span class="img loading" data-mk="${m.media_key}" data-mid="${m.id}"></span>`;
     else if (m.media_key) img = `<span class="img" data-src="${media(m.media_key)}"><img src="${media(m.media_key)}" loading="lazy" alt="Photo"></span>`;
+  } else if (m.type === 'video' && !m.locked) {
+    img = m.local_url
+      ? `<span class="vid"><video src="${m.local_url}" controls playsinline preload="metadata"></video></span>`
+      : `<span class="vid idle" data-vid="${m.id}"><span class="vid-play">▶</span><span class="vid-info">🎥 ${meta.dur ? fmtDur(meta.dur) + ' · ' : ''}${meta.size ? fmtSize(meta.size) : 'Video'} · tap to play</span></span>`;
+  } else if (m.type === 'voice' && !m.locked) {
+    img = `<div class="voice" ${m.local_url ? `data-url="${m.local_url}"` : ''} data-vmid="${m.id || ''}"><button class="vplay" aria-label="Play">${PLAY_IC}</button><div class="vtrack"><div class="vbar"><i></i></div><span class="vdur">${fmtDur(meta.dur)}</span></div></div>`;
   }
+  const fwd = meta.fwd ? '<div class="fwd-tag">↪ Forwarded</div>' : '';
   const txt = m.text ? `<div class="txt ${m.locked ? 'locked' : ''}">${m.locked ? esc(m.text) : linkify(m.text)}</div>` : '';
   const st = mine && !m.pending ? tickState(m.id) : '';
   const tick = mine ? (m.pending ? '<span class="clock">🕓</span>' : st === 'sent' ? TICK1 : TICK2) : '';
   const cls = ['m', mine && 'mine', first && 'first', st && 'st-' + st, m.pending && 'pending', extra].filter(Boolean).join(' ');
-  return `<div class="${cls}" ${m.pending ? `data-temp="${m.temp}"` : `data-id="${m.id}" data-st="${st}"`}>${who}${quote}${img}${txt}<div class="meta"><span>${clock(m.created_at)}</span>${tick}</div></div>`;
+  return `<div class="${cls}" ${m.pending ? `data-temp="${m.temp}"` : `data-id="${m.id}" data-st="${st}"`}>${who}${fwd}${quote}${img}${txt}<div class="meta"><span>${clock(m.created_at)}</span>${tick}</div></div>`;
 }
 let lastRendered = null;
 function renderAll(list) {
@@ -863,7 +909,44 @@ function markRead() {
 }
 
 // tap photo → full screen; tap quote → jump to message
+const PLAY_IC = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>';
+const PAUSE_IC = '<svg viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z" fill="currentColor"/></svg>';
+const msgOf = (el) => { const b = el.closest('[data-id]'); return b ? S.loaded.find((x) => x.id === +b.dataset.id) : null; };
+async function loadVideo(el) {
+  const m = msgOf(el); if (!m || el.classList.contains('loading')) return;
+  el.classList.add('loading'); $('.vid-info', el).textContent = 'Unlocking video…';
+  try {
+    const url = await blobURL(m.media_key, m.ck, (m.meta || {}).mime);
+    el.classList.remove('idle', 'loading');
+    el.innerHTML = `<video src="${url}" controls autoplay playsinline></video>`;
+  } catch { el.classList.remove('loading'); $('.vid-info', el).textContent = 'Video unavailable'; }
+}
+let curAudio = null;
+async function toggleVoice(el, e) {
+  if (el._audio && e && e.target.closest('.vbar')) {
+    const r = $('.vbar', el).getBoundingClientRect();
+    if (el._audio.duration) el._audio.currentTime = ((e.clientX - r.left) / r.width) * el._audio.duration;
+    return;
+  }
+  if (el._audio) { if (el._audio.paused) { if (curAudio && curAudio !== el._audio) curAudio.pause(); curAudio = el._audio; el._audio.play(); } else el._audio.pause(); return; }
+  const m = msgOf(el);
+  el.classList.add('loading');
+  let url = el.dataset.url;
+  try { if (!url) url = await blobURL(m.media_key, m.ck, (m.meta || {}).mime); }
+  catch { el.classList.remove('loading'); $('.vdur', el).textContent = 'unavailable'; return; }
+  el.classList.remove('loading');
+  const a = new Audio(url); el._audio = a;
+  const dur = () => (isFinite(a.duration) && a.duration) || (m && m.meta && m.meta.dur) || 1;
+  a.ontimeupdate = () => { $('.vbar i', el).style.width = Math.min(100, (a.currentTime / dur()) * 100) + '%'; $('.vdur', el).textContent = fmtDur(a.currentTime); };
+  a.onplay = () => { el.classList.add('playing'); $('.vplay', el).innerHTML = PAUSE_IC; };
+  a.onpause = () => { el.classList.remove('playing'); $('.vplay', el).innerHTML = PLAY_IC; };
+  a.onended = () => { a.onpause(); $('.vbar i', el).style.width = '0%'; $('.vdur', el).textContent = fmtDur(dur()); };
+  if (curAudio) curAudio.pause();
+  curAudio = a; a.play().catch(() => toast('Could not play this voice message.'));
+}
 $('#msgs').addEventListener('click', (e) => {
+  const vd = e.target.closest('.vid.idle'); if (vd) return loadVideo(vd);
+  const vo = e.target.closest('.voice'); if (vo) return toggleVoice(vo, e);
   const im = e.target.closest('.img');
   if (im) return showPhoto(im.dataset.src);
   const q = e.target.closest('.quote');
@@ -904,6 +987,8 @@ function msgMenu(id) {
       ${canSend ? '<button data-a="reply">↩️ Reply</button>' : ''}
       ${m.text ? '<button data-a="copy">📋 Copy text</button>' : ''}
       ${m.type === 'image' ? '<button data-a="view">🖼️ View photo</button>' : ''}
+      <button data-a="fwd">↪️ Forward</button>
+      <button data-a="share">📤 Share${m.type === 'text' ? '' : ' or save'}</button>
       ${mine ? `<button data-a="info">ℹ️ Info · ${{ read: 'Seen', delivered: 'Delivered', sent: 'Sent' }[tickState(id)]}</button>` : ''}
       ${mine ? '<button data-a="del" class="danger-txt">🗑️ Delete for everyone</button>' : ''}
     </div>`);
@@ -911,6 +996,8 @@ function msgMenu(id) {
     const a = e.target.closest('button')?.dataset.a; if (!a) return;
     hideModal();
     if (a === 'reply') startReply(id);
+    if (a === 'fwd') forwardSheet(m);
+    if (a === 'share') shareMsg(m);
     if (a === 'info') {
       if (S.chat && S.chat.is_group) { const fake = document.createElement('button'); fake.className = 'seen-label tap'; fake.dataset.mid = id; $('#msgs').appendChild(fake); fake.click(); fake.remove(); }
       else { const st = tickState(id); toast(st === 'read' ? '👁 Seen by ' + nameOf(other()) : st === 'delivered' ? '✓✓ Delivered to their phone, not opened yet' : '✓ Sent. Their phone is offline or has no data right now.'); }
@@ -954,7 +1041,9 @@ ta.addEventListener('keydown', (e) => {
 });
 $('#composer').addEventListener('submit', (e) => {
   e.preventDefault();
-  const body = ta.value.trim(); if (!body || !S.chatId) return;
+  const body = ta.value.trim();
+  if (!S.chatId) return;
+  if (!body) return startVoice();
   ta.value = ''; autosize(); $('#sendBtn').classList.remove('ready'); if (touch) ta.focus();
   send({ type: 'text', text: body });
 });
@@ -969,11 +1058,7 @@ async function send(payload, previewUrl) {
   box.insertAdjacentHTML('beforeend', msgHTML(fake, lastRendered, 'pop'));
   scrollBottom(true);
   try {
-    if (!S.members.length) await loadChatDetails();
-    const people = S.members.filter((x) => !x.deleted);
-    if (!people.some((x) => x.id === S.me.id)) people.push({ id: S.me.id, public_key: KEYS.pub });
-    const missing = people.filter((x) => !x.public_key);
-    if (missing.length && !S.warnedKeys) { S.warnedKeys = true; toast(`${nameOf(missing[0]).split(' ')[0]} needs to log in to the new Yarn before they can read encrypted messages.`); }
+    const people = await chatRecipients();
     const sealed = await seal(people, payload.text);
     const req = { type: payload.type, body: sealed.body, reply_to: reply?.id };
     if (payload.type === 'image') req.enc_data = await encryptImage(sealed.ck, payload.data);
@@ -1001,13 +1086,273 @@ async function send(payload, previewUrl) {
   }
 }
 
+async function chatRecipients() {
+  if (!S.members.length) await loadChatDetails();
+  const people = S.members.filter((x) => !x.deleted);
+  if (!people.some((x) => x.id === S.me.id)) people.push({ id: S.me.id, public_key: KEYS.pub });
+  const missing = people.filter((x) => !x.public_key);
+  if (missing.length && !S.warnedKeys) { S.warnedKeys = true; toast(`${nameOf(missing[0]).split(' ')[0]} needs to log in to the new Yarn before they can read encrypted messages.`); }
+  return people;
+}
+// Send a video or voice note
+async function sendMedia(type, blob, caption = '', meta = {}) {
+  const id = S.chatId; if (!id) return;
+  if (blob.size > 16 * 1048576) return toast('That file is over 16 MB. Try a shorter clip.');
+  const temp = ++S.tempN, reply = S.replyTo; clearReply();
+  const local = URL.createObjectURL(blob);
+  meta = { ...meta, mime: blob.type || meta.mime || '', size: blob.size };
+  const fake = {
+    temp, pending: true, sender_id: S.me.id, type, text: caption, local_url: local, meta, created_at: Date.now(),
+    reply_to: reply?.id, reply_type: reply?.type, reply_text: reply?.text, reply_sender: reply?.sender_id, reply_name: reply?.name,
+  };
+  const box = $('#msgs');
+  box.insertAdjacentHTML('beforeend', msgHTML(fake, lastRendered, 'pop'));
+  scrollBottom(true);
+  const label = (t) => { const el = box.querySelector(`[data-temp="${temp}"] .meta span`); if (el) el.textContent = t; };
+  try {
+    label('Locking…');
+    const people = await chatRecipients();
+    const sealed = await seal(people, caption, meta);
+    const enc = await aesEncrypt(sealed.ck, new Uint8Array(await blob.arrayBuffer()));
+    const key = await uploadBlob(enc, (f) => label(`Sending ${Math.round(f * 100)}%`));
+    const d = await api(`chats/${id}/messages`, { body: { type, body: sealed.body, blob_key: key, reply_to: reply?.id } });
+    blobURLs.set(key, Promise.resolve(local));
+    Object.assign(d.message, { _d: true, text: caption, ck: sealed.ck, meta, local_url: local, reply_text: reply?.text });
+    sounds.sent();
+    const el = box.querySelector(`[data-temp="${temp}"]`);
+    if (S.chatId !== id) return;
+    if (S.ids.has(d.message.id)) el?.remove();
+    else {
+      S.ids.add(d.message.id); S.loaded.push(d.message);
+      S.lastId = Math.max(S.lastId, d.message.id);
+      const html = msgHTML(d.message, lastRendered); lastRendered = d.message;
+      if (el) el.outerHTML = html; else box.insertAdjacentHTML('beforeend', html);
+    }
+    lastMarked = Math.max(lastMarked, d.message.id);
+    updateSeenLabel();
+    setTimeout(loadChats, 300);
+  } catch (e) {
+    const el = box.querySelector(`[data-temp="${temp}"]`);
+    if (el) { el.classList.add('failed'); label('Not sent'); }
+    toast(e.message);
+  }
+}
+
+/* ----- voice messages ----- */
+function pickMime(kind) {
+  const opts = kind === 'audio'
+    ? ['audio/webm;codecs=opus', 'audio/mp4', 'audio/aac', 'audio/webm', 'audio/ogg;codecs=opus']
+    : ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  return opts.find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) || '';
+}
+const REC = { rec: null, chunks: [], start: 0, timer: null, stream: null, cancel: false };
+async function startVoice() {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast('Voice messages are not supported in this browser.');
+  if (REC.rec && REC.rec.state === 'recording') return;
+  try { REC.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch { return toast('Allow microphone access to record voice messages.'); }
+  const mime = pickMime('audio');
+  REC.rec = new MediaRecorder(REC.stream, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : undefined);
+  REC.chunks = []; REC.cancel = false;
+  REC.rec.ondataavailable = (e) => { if (e.data && e.data.size) REC.chunks.push(e.data); };
+  REC.rec.onstop = () => {
+    REC.stream.getTracks().forEach((t) => t.stop());
+    const dur = (Date.now() - REC.start) / 1000;
+    showRecBar(false);
+    if (REC.cancel) return;
+    if (dur < 1) return toast('Hold on a bit longer to record.');
+    sendMedia('voice', new Blob(REC.chunks, { type: REC.rec.mimeType || mime || 'audio/webm' }), '', { dur: Math.round(dur) });
+  };
+  REC.rec.start(250); REC.start = Date.now();
+  showRecBar(true);
+  if (navigator.vibrate) try { navigator.vibrate(30); } catch {}
+  clearInterval(REC.timer);
+  REC.timer = setInterval(() => {
+    const sec = Math.floor((Date.now() - REC.start) / 1000);
+    $('#recTime').textContent = fmtDur(sec);
+    if (sec >= 300) stopVoice(false);
+  }, 250);
+}
+function stopVoice(cancel) {
+  REC.cancel = cancel; clearInterval(REC.timer);
+  if (REC.rec && REC.rec.state !== 'inactive') REC.rec.stop(); else showRecBar(false);
+}
+function showRecBar(on) {
+  $('#recBar').classList.toggle('hidden', !on);
+  $('#composer').classList.toggle('hidden', on);
+  $('#recTime').textContent = '0:00';
+}
+$('#recCancel').onclick = () => { stopVoice(true); toast('Recording deleted'); };
+$('#recSend').onclick = () => stopVoice(false);
+
+/* ----- camera: tap for photo, hold for video ----- */
+const CAM = { stream: null, facing: 'environment', rec: null, chunks: [], mode: 'chat', holdT: null, recording: false, down: false, t0: 0, tick: null, discard: false };
+async function openCamera(mode) {
+  CAM.mode = mode;
+  if (!navigator.mediaDevices?.getUserMedia) return pickImage(mode === 'vibe' ? 'vibe' : 'chat');
+  hideModal();
+  $('#cam').classList.remove('hidden'); $('#camPreview').classList.add('hidden'); $('#camPreview').innerHTML = '';
+  await camStart();
+}
+async function camStart() {
+  camStopStream();
+  try { CAM.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: CAM.facing, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true }); }
+  catch {
+    try { CAM.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: CAM.facing } }); }
+    catch { closeCamera(); return toast('Allow camera access to take photos and videos.'); }
+  }
+  const v = $('#camVideo');
+  v.srcObject = CAM.stream; v.classList.toggle('mirror', CAM.facing === 'user');
+  v.play().catch(() => {});
+}
+function camStopStream() { if (CAM.stream) CAM.stream.getTracks().forEach((t) => t.stop()); CAM.stream = null; }
+function closeCamera() { camStopRec(true); camStopStream(); $('#cam').classList.add('hidden'); $('#camPreview').innerHTML = ''; }
+$('#camClose').onclick = closeCamera;
+$('#camFlip').onclick = () => { if (CAM.recording) return; CAM.facing = CAM.facing === 'user' ? 'environment' : 'user'; camStart(); };
+$('#camGallery').onclick = () => { const mode = CAM.mode; closeCamera(); pickImage(mode === 'vibe' ? 'vibe' : 'chat'); };
+const shutter = $('#camShutter');
+shutter.addEventListener('contextmenu', (e) => e.preventDefault());
+shutter.addEventListener('pointerdown', (e) => { e.preventDefault(); CAM.down = true; CAM.holdT = setTimeout(camStartRec, 320); });
+const shutterUp = () => {
+  if (!CAM.down) return; CAM.down = false;
+  if (CAM.recording) return camStopRec(false);
+  if (CAM.holdT) { clearTimeout(CAM.holdT); CAM.holdT = null; camPhoto(); }
+};
+['pointerup', 'pointercancel', 'pointerleave'].forEach((ev) => shutter.addEventListener(ev, shutterUp));
+function camPhoto() {
+  const v = $('#camVideo'); if (!v.videoWidth) return;
+  const c = document.createElement('canvas'), sc = Math.min(1, 1600 / Math.max(v.videoWidth, v.videoHeight));
+  c.width = Math.round(v.videoWidth * sc); c.height = Math.round(v.videoHeight * sc);
+  const ctx = c.getContext('2d');
+  if (CAM.facing === 'user') { ctx.translate(c.width, 0); ctx.scale(-1, 1); }
+  ctx.drawImage(v, 0, 0, c.width, c.height);
+  let q = 0.85, data = c.toDataURL('image/jpeg', q);
+  while (data.length > 1200000 && q > 0.4) { q -= 0.1; data = c.toDataURL('image/jpeg', q); }
+  const f = $('#camFlash'); f.classList.remove('go'); void f.offsetWidth; f.classList.add('go');
+  camPreview({ kind: 'photo', data });
+}
+function camStartRec() {
+  CAM.holdT = null;
+  if (!window.MediaRecorder || !CAM.stream) return camPhoto();
+  const mime = pickMime('video');
+  CAM.chunks = []; CAM.discard = false;
+  try { CAM.rec = new MediaRecorder(CAM.stream, mime ? { mimeType: mime, videoBitsPerSecond: 1200000, audioBitsPerSecond: 64000 } : undefined); }
+  catch { return camPhoto(); }
+  CAM.rec.ondataavailable = (e) => { if (e.data && e.data.size) CAM.chunks.push(e.data); };
+  CAM.rec.onstop = () => {
+    if (CAM.discard) return;
+    const dur = Math.max(1, Math.round((Date.now() - CAM.t0) / 1000));
+    camPreview({ kind: 'video', blob: new Blob(CAM.chunks, { type: (CAM.rec.mimeType || mime || 'video/webm').split(';')[0] }), dur });
+  };
+  CAM.rec.start(500); CAM.recording = true; CAM.t0 = Date.now();
+  $('#cam').classList.add('recording');
+  if (navigator.vibrate) try { navigator.vibrate(30); } catch {}
+  clearInterval(CAM.tick);
+  CAM.tick = setInterval(() => {
+    const sec = Math.floor((Date.now() - CAM.t0) / 1000);
+    $('#camTimer').textContent = fmtDur(sec) + ' / 0:30';
+    if (sec >= 30) camStopRec(false);
+  }, 250);
+}
+function camStopRec(discard) {
+  clearInterval(CAM.tick); clearTimeout(CAM.holdT); CAM.holdT = null;
+  $('#cam').classList.remove('recording'); $('#camTimer').textContent = '0:00';
+  if (CAM.recording) { CAM.recording = false; CAM.discard = discard; try { CAM.rec.stop(); } catch {} }
+}
+function camPreview(item) {
+  const pv = $('#camPreview');
+  const src = item.kind === 'photo' ? item.data : URL.createObjectURL(item.blob);
+  pv.innerHTML = `<div class="cp-media">${item.kind === 'photo' ? `<img src="${src}" alt="">` : `<video src="${src}" controls autoplay playsinline loop></video>`}</div>
+    <div class="cp-bar"><button class="cam-btn" id="camRetake" aria-label="Retake">↺</button>
+      <input id="camCap" placeholder="${CAM.mode === 'vibe' ? 'Add a caption to your vibe…' : 'Add a caption…'}" maxlength="700">
+      <button class="send ready" id="camSend" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M4.5 12.5L20 4l-5 16-3-6.5z" fill="currentColor"/></svg></button></div>`;
+  pv.classList.remove('hidden');
+  $('#camRetake').onclick = () => { pv.classList.add('hidden'); pv.innerHTML = ''; };
+  $('#camSend').onclick = () => {
+    const cap = $('#camCap').value.trim(), mode = CAM.mode;
+    closeCamera();
+    if (mode === 'vibe') item.kind === 'photo' ? postVibePhoto(item.data, cap) : postVibeVideo(item.blob, cap, item.dur);
+    else item.kind === 'photo' ? send({ type: 'image', data: item.data, text: cap }, item.data) : sendMedia('video', item.blob, cap, { dur: item.dur });
+  };
+}
+$('#camBtn').onclick = () => openCamera('chat');
+
+/* ----- forward & share ----- */
+async function msgMediaURL(m) {
+  if (m.local_url) return m.local_url;
+  if (m.media_url) return m.media_url;
+  if (m.type === 'image') return m.ck ? mediaURL(m.media_key, m.ck) : media(m.media_key);
+  return blobURL(m.media_key, m.ck, (m.meta || {}).mime);
+}
+async function msgBytes(m) { return new Uint8Array(await (await fetch(await msgMediaURL(m))).arrayBuffer()); }
+function forwardSheet(m) {
+  const list = S.chats.filter((c) => !c.other_deleted);
+  showModal(`<h2>Forward to…</h2><p class="muted">${esc(snippet(m.type, m.text).slice(0, 80))}</p>
+    <div class="ulist fwd">${list.map((c) => `<label class="urow"><input type="checkbox" class="fwchk" value="${c.id}">
+      ${c.is_group ? avatarHTML(c.name, 'g' + c.id, 'sm') : avatarHTML(chatTitle(c), c.other_username, 'sm', c.other_avatar)}
+      <div class="ur-main"><strong>${esc(chatTitle(c))}</strong><span>${c.is_group ? 'Group' : '@' + esc(c.other_username || '')}</span></div></label>`).join('') || '<p class="muted pad">No chats yet.</p>'}</div>
+    <div class="row"><button class="btn ghost" data-close>Cancel</button><button class="btn" id="fwGo">Forward</button></div>`);
+  $('#fwGo').onclick = async () => {
+    const ids = $$('.fwchk:checked').map((x) => +x.value);
+    if (!ids.length) return toast('Pick at least one chat.');
+    const b = $('#fwGo'); b.disabled = true; b.textContent = 'Sending…';
+    let ok = 0;
+    try {
+      const bytes = m.type === 'text' ? null : await msgBytes(m);
+      for (const cid of ids) {
+        try {
+          const d = await api('chats/' + cid);
+          const people = d.members.filter((x) => !x.deleted);
+          const sealed = await seal(people, m.text, { ...(m.meta || {}), fwd: 1 });
+          const req = { type: m.type, body: sealed.body };
+          if (m.type === 'image') req.enc_data = b64(await aesEncrypt(sealed.ck, bytes));
+          if (m.type === 'video' || m.type === 'voice') req.blob_key = await uploadBlob(await aesEncrypt(sealed.ck, bytes));
+          await api(`chats/${cid}/messages`, { body: req });
+          ok++;
+        } catch (e) { toast(e.message); }
+      }
+      hideModal();
+      if (ok) toast(`Forwarded to ${ok} chat${ok > 1 ? 's' : ''} ↪`);
+      loadChats(); if (ids.includes(S.chatId)) pollMessages();
+    } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Forward'; }
+  };
+}
+async function shareMsg(m) {
+  let file = null;
+  try {
+    if (m.type === 'text') {
+      if (navigator.share) return await navigator.share({ text: m.text });
+      await navigator.clipboard.writeText(m.text); return toast('Copied. Paste it anywhere.');
+    }
+    const blob = await (await fetch(await msgMediaURL(m))).blob();
+    const mime = blob.type || (m.meta || {}).mime || (m.type === 'image' ? 'image/jpeg' : '');
+    const ext = m.type === 'image' ? 'jpg' : /mp4|m4a|aac/.test(mime) ? (m.type === 'voice' ? 'm4a' : 'mp4') : m.type === 'voice' ? 'webm' : 'webm';
+    file = new File([blob], `yarn-${m.type}-${m.id || Date.now()}.${ext}`, { type: mime || 'application/octet-stream' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) return await navigator.share({ files: [file], text: m.text || undefined });
+    throw Object.assign(new Error('fallback'), { name: 'Fallback' });
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    if (file) {
+      const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name;
+      document.body.appendChild(a); a.click(); a.remove();
+      return toast('Saved to your downloads.');
+    }
+    toast('Could not share this message.');
+  }
+}
+
 /* ================= images ================= */
 let fileMode = null;
 function pickImage(mode) { fileMode = mode; $('#fileIn').value = ''; $('#fileIn').click(); }
 $('#attachBtn').onclick = () => pickImage('chat');
 $('#fileIn').addEventListener('change', async () => {
   const f = $('#fileIn').files[0]; if (!f) return;
-  if (!f.type.startsWith('image/')) return toast('Pick a photo.');
+  if (f.type.startsWith('video/')) {
+    if (fileMode === 'avatar') return toast('Pick a photo for your profile.');
+    if (f.size > 16 * 1048576) return toast('That video is over 16 MB. Try a shorter clip.');
+    return videoStep(f, fileMode === 'vibe' ? 'vibe' : 'chat');
+  }
+  if (!f.type.startsWith('image/')) return toast('Pick a photo or video.');
   try {
     if (fileMode === 'avatar') return uploadAvatar(await compress(f, 480, true));
     const data = await compress(f, 1280);
@@ -1019,6 +1364,18 @@ $('#fileIn').addEventListener('change', async () => {
     $('#cap').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#sendImg').click(); });
   } catch { toast('Could not read that photo.'); }
 });
+function videoStep(file, mode) {
+  const url = URL.createObjectURL(file);
+  showModal(`<h2>${mode === 'vibe' ? 'Video vibe' : 'Send video'}</h2><video class="preview-img" id="vsPrev" src="${url}" controls playsinline></video>
+    <p class="muted">${fmtSize(file.size)}</p>
+    <input class="field" id="vsCap" placeholder="Add a caption (optional)" maxlength="700">
+    <div class="row"><button class="btn ghost" data-close>Cancel</button><button class="btn" id="vsGo">${mode === 'vibe' ? 'Post' : 'Send'}</button></div>`);
+  $('#vsGo').onclick = () => {
+    const d = $('#vsPrev').duration, dur = isFinite(d) ? Math.round(d) : 0, cap = $('#vsCap').value.trim();
+    hideModal();
+    mode === 'vibe' ? postVibeVideo(file, cap, dur) : sendMedia('video', file, cap, { dur });
+  };
+}
 async function compress(file, max, square = false) {
   const url = URL.createObjectURL(file);
   const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
@@ -1282,7 +1639,9 @@ function openNewVibe() {
   showModal(`<h2>Post a vibe</h2>
     <div class="vibe-compose" id="vc" style="background:${VIBE_BGS[bg]}"><textarea id="vt" maxlength="700" placeholder="What's the vibe today?"></textarea></div>
     <div class="swatches" id="sw">${Object.keys(VIBE_BGS).map((k) => `<button data-bg="${k}" class="${k === bg ? 'on' : ''}" style="background:${VIBE_BGS[k]}" aria-label="Colour"></button>`).join('')}</div>
-    <div class="row"><button class="btn ghost" id="vPhoto">📷 Photo vibe</button><button class="btn" id="vPost">Post</button></div>`);
+    <div class="row"><button class="btn ghost" id="vPhoto">🖼️ Gallery</button><button class="btn ghost" id="vCam">📸 Camera</button></div>
+    <div class="row"><button class="btn" id="vPost">Post text vibe</button></div>`);
+  $('#vCam').onclick = () => openCamera('vibe');
   $('#sw').onclick = (e) => {
     const b = e.target.closest('[data-bg]'); if (!b) return;
     bg = b.dataset.bg; $('#vc').style.background = VIBE_BGS[bg];
@@ -1307,6 +1666,7 @@ async function openVibe(v, ownerKey) {
     const r = await unseal(v.body, ownerKey);
     text = r.text;
     if (v.type === 'image') url = await mediaURL(v.media_key, r.ck);
+    if (v.type === 'video') url = await blobURL(v.media_key, r.ck, (r.meta || {}).mime);
   } else if (v.type === 'image') url = media(v.media_key);
   return (v._p = { text, url });
 }
@@ -1314,15 +1674,27 @@ function vibePhotoStep(data) {
   showModal(`<h2>Photo vibe</h2><img class="preview-img" src="${data}" alt="">
     <input class="field" id="vcap" placeholder="Add a caption (optional)" maxlength="300">
     <div class="row"><button class="btn ghost" data-close>Cancel</button><button class="btn" id="vpPost">Post</button></div>`);
-  $('#vpPost').onclick = async () => {
-    const b = $('#vpPost'); b.disabled = true;
-    try {
-      const sealed = await seal(vibeAudience(), $('#vcap').value.trim());
-      await api('vibes', { body: { type: 'image', body: sealed.body, enc_data: await encryptImage(sealed.ck, data) } });
-      hideModal(); toast('Vibe posted ✨'); await loadVibes(); setTab('vibes');
-    }
-    catch (e) { toast(e.message); b.disabled = false; }
-  };
+  $('#vpPost').onclick = () => { const cap = $('#vcap').value.trim(); hideModal(); postVibePhoto(data, cap); };
+}
+async function postVibePhoto(data, cap) {
+  try {
+    toast('Posting your vibe…');
+    const sealed = await seal(vibeAudience(), cap);
+    await api('vibes', { body: { type: 'image', body: sealed.body, enc_data: await encryptImage(sealed.ck, data) } });
+    toast('Vibe posted ✨'); await loadVibes(); setTab('vibes');
+  } catch (e) { toast(e.message); }
+}
+async function postVibeVideo(blob, cap, dur) {
+  if (blob.size > 16 * 1048576) return toast('That video is over 16 MB. Try a shorter clip.');
+  try {
+    toast('Posting your video vibe…');
+    const meta = { mime: (blob.type || 'video/mp4').split(';')[0], size: blob.size, dur };
+    const sealed = await seal(vibeAudience(), cap, meta);
+    const key = await uploadBlob(await aesEncrypt(sealed.ck, new Uint8Array(await blob.arrayBuffer())), (f) => toast(`Uploading video ${Math.round(f * 100)}%`));
+    blobURLs.set(key, Promise.resolve(URL.createObjectURL(blob)));
+    await api('vibes', { body: { type: 'video', body: sealed.body, blob_key: key } });
+    toast('Video vibe posted ✨'); await loadVibes(); setTab('vibes');
+  } catch (e) { toast(e.message); }
 }
 
 /* ----- story viewer ----- */
@@ -1336,13 +1708,54 @@ function openStory(groups, gi) {
   showVibe();
 }
 function closeStory() {
-  clearTimeout(ST.timer); ST.ticket = (ST.ticket || 0) + 1;
+  stopProgress(); ST.ticket = (ST.ticket || 0) + 1;
   $('#story').classList.add('hidden');
   $('#stBody').innerHTML = '';
   loadVibes();
 }
+// Story timing: runs frame by frame so it can pause while you hold
+function startProgress(dur, vid) {
+  cancelAnimationFrame(ST.raf);
+  Object.assign(ST, { elapsed: 0, last: performance.now(), dur, video: vid || null, paused: false });
+  $('#story').classList.remove('paused');
+  const bar = $(`#stBars i:nth-child(${ST.i + 1}) b`);
+  const step = (now) => {
+    if (!ST.paused && !ST.video) ST.elapsed += now - ST.last;
+    ST.last = now;
+    const f = ST.video ? (ST.video.duration ? ST.video.currentTime / ST.video.duration : 0) : ST.elapsed / ST.dur;
+    if (bar) bar.style.width = Math.min(100, f * 100) + '%';
+    if (!ST.video && ST.elapsed >= ST.dur) return nextVibe();
+    ST.raf = requestAnimationFrame(step);
+  };
+  ST.raf = requestAnimationFrame(step);
+}
+function stopProgress() {
+  cancelAnimationFrame(ST.raf);
+  if (ST.video) { ST.video.onended = null; ST.video.pause(); }
+  ST.video = null;
+}
+function pauseStory(p) {
+  if ($('#story').classList.contains('hidden')) return;
+  ST.paused = p; $('#story').classList.toggle('paused', p);
+  if (ST.video) p ? ST.video.pause() : ST.video.play().catch(() => {});
+}
+let stHoldT = null, stHeld = false;
+['#stPrev', '#stNext'].forEach((sel) => {
+  const el = $(sel);
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
+  el.addEventListener('pointerdown', () => { stHeld = false; clearTimeout(stHoldT); stHoldT = setTimeout(() => { stHeld = true; pauseStory(true); }, 220); });
+  const up = () => { clearTimeout(stHoldT); if (stHeld) pauseStory(false); };
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach((ev) => el.addEventListener(ev, up));
+});
+document.addEventListener('keydown', (e) => {
+  if ($('#story').classList.contains('hidden')) return;
+  if (e.key === ' ') { e.preventDefault(); pauseStory(!ST.paused); }
+  if (e.key === 'ArrowRight') nextVibe();
+  if (e.key === 'ArrowLeft') prevVibe();
+});
+$('#stMute').onclick = () => { ST.muted = !ST.muted; if (ST.video) ST.video.muted = ST.muted; $('#stMute').textContent = ST.muted ? '🔇' : '🔊'; };
 async function showVibe() {
-  clearTimeout(ST.timer);
+  stopProgress();
   const g = ST.groups[ST.gi], v = g.items[ST.i];
   if (!v) return closeStory();
   const ticket = (ST.ticket = (ST.ticket || 0) + 1);
@@ -1354,22 +1767,29 @@ async function showVibe() {
   $('#stAv').innerHTML = avatarHTML(nameOf(g.user), g.user.username, 'sm', g.user.avatar_key);
   $('#stName').textContent = g.mineGroup ? 'My vibe' : nameOf(g.user);
   $('#stTime').textContent = ago(v.created_at);
-  $('#stBody').innerHTML = v.type === 'image' && plain.url
-    ? `<img src="${plain.url}" alt="">${plain.text ? `<p class="st-cap">${linkify(plain.text)}</p>` : ''}`
-    : `<div class="st-text" style="background:${VIBE_BGS[v.bg] || VIBE_BGS.g0}"><p>${linkify(plain.text)}</p></div>`;
+  const cap = plain.text ? `<p class="st-cap">${linkify(plain.text)}</p>` : '';
+  $('#stBody').innerHTML = v.type === 'video' && plain.url
+    ? `<video id="stVid" src="${plain.url}" playsinline autoplay></video>${cap}`
+    : v.type === 'image' && plain.url
+    ? `<img src="${plain.url}" alt="">${cap}`
+    : `<div class="st-text" style="background:${VIBE_BGS[v.bg] || VIBE_BGS.g0}"><p>${linkify(plain.text || (v.type === 'video' ? '🎥 Video unavailable' : ''))}</p></div>`;
+  $('#stMute').classList.toggle('hidden', !$('#stVid'));
   $('#stFoot').innerHTML = g.mineGroup
     ? `<button id="stViews">👁 ${v.views} view${v.views === 1 ? '' : 's'}</button><button id="stDel">🗑️ Delete</button>`
     : `<button id="stReply">💬 Reply to ${esc(nameOf(g.user).split(' ')[0])}</button>`;
   if (!g.mineGroup && !v.seen) { v.seen = 1; api(`vibes/${v.id}/view`, { body: {} }).catch(() => {}); }
-  ST.dur = v.type === 'image' ? 6000 : Math.min(9000, 4000 + (plain.text || '').length * 35);
-  const bar = $(`#stBars i:nth-child(${ST.i + 1}) b`);
-  requestAnimationFrame(() => { bar.style.transition = `width ${ST.dur}ms linear`; bar.style.width = '100%'; });
-  ST.timer = setTimeout(nextVibe, ST.dur);
+  const vid = $('#stVid');
+  if (vid) {
+    vid.muted = !!ST.muted; $('#stMute').textContent = ST.muted ? '🔇' : '🔊';
+    vid.onended = nextVibe;
+    vid.play().catch(() => { ST.muted = true; vid.muted = true; $('#stMute').textContent = '🔇'; vid.play().catch(() => {}); });
+    startProgress(0, vid);
+  } else startProgress(v.type === 'image' ? 6000 : Math.min(9000, 4000 + (plain.text || '').length * 35), null);
   const sv = $('#stViews');
   if (sv) sv.onclick = () => showViewers(v);
   const sd = $('#stDel');
   if (sd) sd.onclick = async () => {
-    clearTimeout(ST.timer);
+    stopProgress();
     if (!confirm('Delete this vibe?')) return showVibe();
     try { await api(`vibes/${v.id}/delete`, { body: {} }); g.items.splice(ST.i, 1); toast('Vibe deleted'); g.items.length ? showVibe() : closeStory(); }
     catch (e) { toast(e.message); }
@@ -1392,11 +1812,11 @@ function prevVibe() {
   if (ST.gi > 0) { ST.gi--; ST.i = 0; return showVibe(); }
   showVibe();
 }
-$('#stNext').onclick = nextVibe;
-$('#stPrev').onclick = prevVibe;
+$('#stNext').onclick = () => { if (stHeld) { stHeld = false; return; } nextVibe(); };
+$('#stPrev').onclick = () => { if (stHeld) { stHeld = false; return; } prevVibe(); };
 $('#stClose').onclick = closeStory;
 async function showViewers(v) {
-  clearTimeout(ST.timer);
+  stopProgress();
   try {
     const d = await api(`vibes/${v.id}/viewers`);
     closeStory();
