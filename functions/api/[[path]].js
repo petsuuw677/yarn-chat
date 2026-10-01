@@ -286,9 +286,36 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
   // ---------- Yarn AI (Cloudflare Workers AI; chats are kept on the user's device, never stored here) ----------
   const AI_LIMIT = parseInt(env.AI_DAILY_LIMIT || '40');
   const today = new Date(t).toISOString().slice(0, 10);
+  const IMG_LIMIT = parseInt(env.AI_IMAGE_LIMIT || '10');
   if (m === 'GET' && p === 'ai/usage') {
-    const u = await DB.prepare('SELECT count FROM ai_usage WHERE user_id=? AND day=?').bind(me.id, today).first();
-    return J({ enabled: !!env.AI, used: u ? u.count : 0, limit: AI_LIMIT });
+    const [u, im] = await DB.batch([
+      DB.prepare('SELECT count FROM ai_usage WHERE user_id=? AND day=?').bind(me.id, today),
+      DB.prepare('SELECT count FROM ai_usage WHERE user_id=? AND day=?').bind(me.id, 'img:' + today),
+    ]);
+    return J({ enabled: !!env.AI, used: u.results[0]?.count || 0, limit: AI_LIMIT, img_used: im.results[0]?.count || 0, img_limit: IMG_LIMIT });
+  }
+  // Create an image from a description
+  if (m === 'POST' && p === 'ai/image') {
+    if (!env.AI) return err('Yarn AI is not switched on yet. The app owner needs to add the Workers AI binding.', 503);
+    const b = await body();
+    const prompt = String(b.prompt || '').trim().slice(0, 600);
+    if (prompt.length < 3) return err('Describe the image you want me to create.');
+    if (/\b(nude|nudes|naked|nsfw|porn\w*|sex|sexy|sexual|explicit|topless|bottomless|lingerie|xxx|hentai|erotic\w*|fetish|gore|gory|beheading|dismember\w*|mutilat\w*)\b/i.test(prompt))
+      return err("Yarn AI can't create that kind of image. Try describing something else. 🙏");
+    const dayKey = 'img:' + today;
+    const used = await DB.prepare('SELECT count FROM ai_usage WHERE user_id=? AND day=?').bind(me.id, dayKey).first();
+    if (used && used.count >= IMG_LIMIT) return err(`You've made today's ${IMG_LIMIT} images. More tomorrow! 🎨`, 429);
+    await DB.prepare('INSERT INTO ai_usage (user_id,day,count) VALUES (?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET count=count+1').bind(me.id, dayKey).run();
+    try {
+      const out = await env.AI.run(env.AI_IMAGE_MODEL || '@cf/black-forest-labs/flux-1-schnell', { prompt, steps: 4 });
+      if (out && out.image) return J({ image: 'data:image/jpeg;base64,' + out.image });
+    } catch {}
+    try {
+      const png = await env.AI.run('@cf/bytedance/stable-diffusion-xl-lightning', { prompt });
+      if (png) return new Response(png, { headers: { 'content-type': 'image/png', 'cache-control': 'no-store' } });
+    } catch {}
+    await DB.prepare('UPDATE ai_usage SET count=MAX(count-1,0) WHERE user_id=? AND day=?').bind(me.id, dayKey).run();
+    return err("Couldn't create that image right now. Please try again in a minute.", 503);
   }
   if (m === 'POST' && p === 'ai/chat') {
     if (!env.AI) return err('Yarn AI is not switched on yet. The app owner needs to add the Workers AI binding.', 503);
