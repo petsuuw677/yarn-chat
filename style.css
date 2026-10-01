@@ -551,3 +551,8 @@ button { cursor: pointer; background: none; border: 0; }
 .story.paused .st-paused { opacity: 1; }
 .story.paused .st-head, .story.paused .st-foot, .story.paused .st-bars { opacity: 0; transition: opacity .15s; }
 .st-zone { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+
+/* ================= v6: devices ================= */
+.dev-note { margin: 0 2px 6px; font-size: 13px; }
+.urow.dev { cursor: default; }
+.dev-ic { width: 40px; height: 40px; border-radius: 12px; background: var(--bg); display: grid; place-items: center; font-size: 20px; flex: none; }

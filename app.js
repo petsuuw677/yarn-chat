@@ -503,6 +503,16 @@ function notifyMsg(c) {
   }
 }
 
+/* ================= devices ================= */
+function deviceName() {
+  const ua = navigator.userAgent;
+  const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS X|Macintosh/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : 'Device';
+  const br = /Edg\//.test(ua) ? 'Edge' : /SamsungBrowser/.test(ua) ? 'Samsung Internet' : /OPR|Opera/.test(ua) ? 'Opera' : /Firefox|FxiOS/.test(ua) ? 'Firefox' : /CriOS|Chrome/.test(ua) ? 'Chrome' : /Safari/.test(ua) ? 'Safari' : 'Browser';
+  const app = matchMedia('(display-mode: standalone)').matches || navigator.standalone ? 'Yarn app' : br;
+  return `${app} on ${os}`;
+}
+const deviceIcon = (d) => (/iPhone|Android|iPad/.test(d || '') ? '📱' : '💻');
+
 /* ================= auth ================= */
 let authMode = 'login';
 $$('.tabs button').forEach((b) => b.addEventListener('click', () => {
@@ -527,12 +537,12 @@ $('#authForm').addEventListener('submit', async (e) => {
     let d;
     if (authMode === 'register') {
       const id = await newIdentity(sec.wrapKey);
-      d = await api('register', { body: { username: un, password: sec.auth, display_name: $('#dn').value, public_key: id.pub, enc_priv: id.sealed } });
+      d = await api('register', { body: { username: un, password: sec.auth, display_name: $('#dn').value, public_key: id.pub, enc_priv: id.sealed, device: deviceName() } });
       S.token = d.token;
       await saveKeys(d.user.id, id.priv, id.pub);
     } else {
-      try { d = await api('login', { body: { username: un, password: sec.auth } }); }
-      catch (x) { if (x.data && x.data.legacy) d = await api('login', { body: { username: un, password: sec.auth, legacy_password: pw } }); else throw x; }
+      try { d = await api('login', { body: { username: un, password: sec.auth, device: deviceName() } }); }
+      catch (x) { if (x.data && x.data.legacy) d = await api('login', { body: { username: un, password: sec.auth, legacy_password: pw, device: deviceName() } }); else throw x; }
       S.token = d.token;
       await setupKeys(d, sec.wrapKey);
     }
@@ -1869,6 +1879,10 @@ function openSettings() {
     <p class="sec">App</p>
     <div class="setting"><div><strong>Install Yarn</strong><span>${isStandalone() ? 'Installed on this device' : 'Add Yarn to your home screen'}</span></div><button class="btn sm ${isStandalone() ? 'ghost' : ''}" id="sInstall">${isStandalone() ? 'Installed' : 'Install'}</button></div>
 
+    <p class="sec">Devices</p>
+    <p class="muted dev-note">Log in on any phone or computer with your username and password. All your chats and media come with you, still end-to-end encrypted.</p>
+    <div class="ulist" id="devList"><p class="muted pad">Loading…</p></div>
+
     <p class="sec">Password</p>
     <input class="field" type="password" id="pCur" placeholder="Current password" autocomplete="current-password">
     <input class="field" type="password" id="pNew" placeholder="New password (6+ characters)" autocomplete="new-password">
@@ -1948,6 +1962,25 @@ function openSettings() {
     b.disabled = false; b.textContent = 'Change password';
   };
   $('#logout').onclick = async () => { hideModal(); const endpoint = await disablePushOnThisDevice(); try { await api('logout', { body: { endpoint } }); } catch {} signOutLocal(); };
+  const drawDevices = () => api('sessions').then((d) => {
+    const host = $('#devList'); if (!host) return;
+    S.serverNow = d.now;
+    const others = d.sessions.filter((x) => !x.current);
+    host.innerHTML = d.sessions.map((x) => `<div class="urow dev">
+        <span class="dev-ic">${deviceIcon(x.device)}</span>
+        <div class="ur-main"><strong>${esc(x.device || 'Unknown device')}</strong>
+          <span>${x.current ? 'Active now' : 'Active ' + (isOnline(x.last_active) ? 'now' : listTime(x.last_active || x.created_at).replace(/^(\d)/, 'at $1'))}</span></div>
+        ${x.current ? '<span class="tag ok">This one</span>' : `<button class="btn sm ghost" data-rv="${x.id}">Log out</button>`}
+      </div>`).join('') + (others.length ? `<button class="linkbtn danger-txt" id="rvAll">Log out all other devices (${others.length})</button>` : '');
+    host.onclick = async (e) => {
+      const b = e.target.closest('[data-rv]'), all = e.target.closest('#rvAll');
+      if (!b && !all) return;
+      if (all && !confirm('Log out every other device? They will need your password to log back in.')) return;
+      try { await api('sessions/revoke', { body: all ? { others: true } : { id: +b.dataset.rv } }); toast(all ? 'Other devices logged out' : 'Device logged out'); drawDevices(); }
+      catch (x) { toast(x.message); }
+    };
+  }).catch(() => { const host = $('#devList'); if (host) host.innerHTML = '<p class="muted pad">Could not load devices.</p>'; });
+  drawDevices();
   api('blocks').then((d) => {
     const bl = $('#bl'); if (!bl) return;
     bl.innerHTML = d.users.length ? d.users.map((u) => userRow(u, `<button class="btn sm ghost" data-unb="${u.id}">Unblock</button>`)).join('') : '<p class="muted pad">No one. Nice.</p>';
