@@ -18,7 +18,7 @@
   <div class="auth-hero">
     <div class="brand light">yarn<span class="dot"></span></div>
     <h1>Talk to your people. Fast.</h1>
-    <p>Private chats and group chats with just a username. No phone number needed.</p>
+    <p>Private chats, group chats and vibes with just a username. No phone number needed.</p>
     <div class="hero-chat" aria-hidden="true">
       <div class="hb in">Where you dey? 👀</div>
       <div class="hb out">On my way! 10 mins 🚗</div>
@@ -60,23 +60,44 @@
         <button class="icon" id="newGroupBtn" aria-label="New group" title="New group">
           <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 19c.6-3.3 3-5 6-5s5.4 1.7 6 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M18 8v6M15 11h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         </button>
-        <button class="me-btn" id="meBtn" aria-label="My account" title="My account"></button>
+        <button class="me-btn" id="meBtn" aria-label="Settings" title="Profile and settings"></button>
       </div>
     </header>
-    <div class="side-title"><h1>Chats</h1></div>
-    <div class="search">
-      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 16l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-      <input id="filter" placeholder="Search" aria-label="Search chats">
+    <div class="side-title"><h1 id="sideTitle">Chats</h1></div>
+
+    <div id="chatsView" class="tabview">
+      <div class="search">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 16l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <input id="filter" placeholder="Search your chats" aria-label="Search chats">
+      </div>
+      <div class="filters" id="filters">
+        <button data-f="all" class="on">All</button>
+        <button data-f="unread">Unread</button>
+        <button data-f="groups">Groups</button>
+      </div>
+      <ul id="chatList" class="chat-list"></ul>
     </div>
-    <div class="filters" id="filters">
-      <button data-f="all" class="on">All</button>
-      <button data-f="unread">Unread</button>
-      <button data-f="groups">Groups</button>
-    </div>
-    <ul id="chatList" class="chat-list"></ul>
-    <button class="fab" id="newChatBtn" aria-label="New chat" title="New chat">
+    <div id="vibesView" class="tabview scroll hidden"></div>
+    <div id="padisView" class="tabview scroll hidden"></div>
+
+    <button class="fab" id="fab" aria-label="New chat" title="New chat">
       <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>
     </button>
+
+    <nav class="nav" id="nav">
+      <button data-tab="chats" class="on">
+        <span class="nav-ic"><svg viewBox="0 0 24 24"><path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><b class="nav-badge hidden" id="chatsBadge"></b></span>
+        Chats
+      </button>
+      <button data-tab="vibes">
+        <span class="nav-ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="4 2.6"/><circle cx="12" cy="12" r="3.5" fill="currentColor"/></svg><b class="nav-dot hidden" id="vibesDot"></b></span>
+        Vibes
+      </button>
+      <button data-tab="padis">
+        <span class="nav-ic"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 19c.6-3.3 3-5 6-5s5.4 1.7 6 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="17" cy="9" r="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16.5 14c2.4 0 4 1.4 4.5 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>
+        Padis
+      </button>
+    </nav>
   </aside>
 
   <main class="pane">
@@ -99,12 +120,16 @@
 
       <div id="msgs" class="msgs"></div>
 
+      <div id="replyBar" class="reply-bar hidden">
+        <div class="rb-text"><b id="rbName"></b><span id="rbSnip"></span></div>
+        <button class="icon" id="rbClose" aria-label="Cancel reply">✕</button>
+      </div>
+      <div id="blockedBar" class="blocked-bar hidden"></div>
       <form id="composer" class="composer">
         <div class="compose-box">
           <button type="button" class="attach" id="attachBtn" aria-label="Send a photo" title="Send a photo">
             <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="9" cy="10" r="1.8" fill="currentColor"/><path d="M4 17l5-4 4 3 3-2 4 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
           </button>
-          <input type="file" id="fileIn" accept="image/*" hidden>
           <textarea id="text" rows="1" placeholder="Type a message" aria-label="Message"></textarea>
         </div>
         <button class="send" id="sendBtn" aria-label="Send">
@@ -115,8 +140,24 @@
   </main>
 </section>
 
+<input type="file" id="fileIn" accept="image/*" class="hidden-input">
 <div id="modal" class="modal hidden" role="dialog" aria-modal="true"><div class="sheet" id="sheet"></div></div>
 <div id="viewer" class="viewer hidden"><img id="viewerImg" alt=""></div>
+
+<div id="story" class="story hidden">
+  <div class="st-bars" id="stBars"></div>
+  <div class="st-head">
+    <span id="stAv"></span>
+    <div class="st-who"><strong id="stName"></strong><small id="stTime"></small></div>
+    <button class="st-x" id="stClose" aria-label="Close">✕</button>
+  </div>
+  <div class="st-body" id="stBody"></div>
+  <button class="st-zone st-prev" id="stPrev" aria-label="Previous"></button>
+  <button class="st-zone st-next" id="stNext" aria-label="Next"></button>
+  <div class="st-foot" id="stFoot"></div>
+</div>
+
+<button id="notif" class="notif" aria-live="polite"></button>
 <div id="toast" class="toast" role="status"></div>
 
 <script src="/app.js"></script>
