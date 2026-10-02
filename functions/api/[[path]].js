@@ -37,7 +37,7 @@ async function getUser(DB, req) {
   const token = h.startsWith('Bearer ') ? h.slice(7) : '';
   if (!token) return null;
   const u = await DB.prepare(
-    'SELECT u.id,u.username,u.display_name,u.last_seen,u.about,u.avatar_key,u.seen_privacy,u.public_key,u.enc_priv,s.last_active AS s_active FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?'
+    'SELECT u.id,u.username,u.display_name,u.last_seen,u.about,u.avatar_key,u.seen_privacy,u.public_key,u.enc_priv,u.yarn_id,u.keep_archived,u.silence_unknown,u.created_at,s.last_active AS s_active FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND u.deleted=0'
   ).bind(token).first();
   return u ? { ...u, token } : null;
 }
@@ -47,6 +47,9 @@ const meOut = (u) => ({
   id: u.id, username: u.username, display_name: u.display_name,
   about: u.about || '', avatar_key: u.avatar_key || null, seen_privacy: u.seen_privacy || 'everyone',
   public_key: u.public_key || null,
+  yarn_id: u.yarn_id || null,
+  keep_archived: u.keep_archived === undefined || u.keep_archived === null ? true : !!u.keep_archived,
+  silence_unknown: !!u.silence_unknown,
 });
 const okKey = (v, max) => typeof v === 'string' && v.length > 20 && v.length < max;
 const isEnvelope = (v) => typeof v === 'string' && v.startsWith('{"e2e"');
@@ -61,22 +64,175 @@ function parseImage(data, maxLen = 1500000) {
   return { mime: mt[1], b64: mt[2] };
 }
 
-async function profileOf(DB, me, byUsername, val) {
-  const u = await DB.prepare(`SELECT u.id,u.username,u.display_name,u.about,u.avatar_key,u.last_seen,u.seen_privacy,u.public_key,u.deleted,
+// Full profile of someone I'm already connected with (callers must check connectedTo first)
+async function profileOf(DB, me, id) {
+  const u = await DB.prepare(`SELECT u.id,u.yarn_id,u.display_name,u.about,u.avatar_key,u.last_seen,u.seen_privacy,u.public_key,u.deleted,
       (SELECT nickname FROM padis WHERE owner_id=?1 AND padi_id=u.id) AS nickname,
       EXISTS(SELECT 1 FROM padis WHERE owner_id=?1 AND padi_id=u.id) AS is_padi,
       EXISTS(SELECT 1 FROM padis WHERE owner_id=u.id AND padi_id=?1) AS has_me,
       EXISTS(SELECT 1 FROM blocks WHERE blocker_id=?1 AND blocked_id=u.id) AS blocked,
       EXISTS(SELECT 1 FROM blocks WHERE blocker_id=u.id AND blocked_id=?1) AS blocked_me
-    FROM users u WHERE ${byUsername ? 'u.username' : 'u.id'}=?2`).bind(me.id, val).first();
+    FROM users u WHERE u.id=?2`).bind(me.id, id).first();
   if (!u) return null;
   return {
-    id: u.id, username: u.username, display_name: u.display_name, about: u.about || '',
+    id: u.id, username: null, yarn_id: u.deleted ? null : u.yarn_id || null, display_name: u.display_name, about: u.about || '',
     avatar_key: u.avatar_key || null, nickname: u.nickname || null,
     is_padi: !!u.is_padi, mutual: !!(u.is_padi && u.has_me), blocked: !!u.blocked,
     public_key: u.public_key || null, deleted: !!u.deleted,
     last_seen: u.blocked_me ? 0 : showSeen(u.last_seen, u.seen_privacy, u.has_me),
+    avatar_key: u.blocked_me ? null : u.avatar_key || null,
   };
+}
+
+
+/* ---------- Schema upgrades: run automatically, safe to run again ---------- */
+const SCHEMA_VERSION = 10;
+let SCHEMA_OK = false;
+async function ensureSchema(DB) {
+  if (SCHEMA_OK) return;
+  await DB.prepare('CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL)').run();
+  const v = await DB.prepare("SELECT v FROM config WHERE k='schema'").first();
+  if (v && +v.v >= SCHEMA_VERSION) { SCHEMA_OK = true; return; }
+  const cols = [
+    ['users', 'yarn_id', 'TEXT'], ['users', 'link_token', 'TEXT'],
+    ['users', 'keep_archived', 'INTEGER NOT NULL DEFAULT 1'], ['users', 'silence_unknown', 'INTEGER NOT NULL DEFAULT 0'],
+    ['members', 'archived', 'INTEGER NOT NULL DEFAULT 0'], ['messages', 'hidden_for', 'INTEGER'], ['calls', 'silent', 'INTEGER NOT NULL DEFAULT 0'],
+  ];
+  for (const [tb, col, def] of cols) {
+    const info = (await DB.prepare(`PRAGMA table_info(${tb})`).all()).results || [];
+    if (!info.some((c) => c.name === col)) { try { await DB.prepare(`ALTER TABLE ${tb} ADD COLUMN ${col} ${def}`).run(); } catch {} }
+  }
+  for (const q of [
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_yarn_id ON users(yarn_id)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_link ON users(link_token)',
+    'CREATE INDEX IF NOT EXISTS idx_messages_media ON messages(media_key)',
+    'CREATE INDEX IF NOT EXISTS idx_vibes_media ON vibes(media_key)',
+    'CREATE INDEX IF NOT EXISTS idx_members_chat_user ON members(chat_id, user_id)',
+    'CREATE TABLE IF NOT EXISTS rate_limits (k TEXT NOT NULL, win INTEGER NOT NULL, n INTEGER NOT NULL DEFAULT 0, exp INTEGER NOT NULL, PRIMARY KEY (k, win))',
+    'CREATE TABLE IF NOT EXISTS reports (id INTEGER PRIMARY KEY AUTOINCREMENT, reporter_id INTEGER NOT NULL, target_id INTEGER NOT NULL, chat_id INTEGER, reason TEXT NOT NULL, details TEXT, content TEXT, created_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT \'open\')',
+  ]) await DB.prepare(q).run();
+  await DB.prepare("INSERT INTO config (k,v) VALUES ('schema',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").bind(String(SCHEMA_VERSION)).run();
+  SCHEMA_OK = true;
+}
+
+/* ---------- Yarn IDs: random 12-digit contact addresses ---------- */
+function randomDigits(n) {
+  const out = [];
+  while (out.length < n) {
+    const buf = new Uint8Array(32);
+    crypto.getRandomValues(buf);
+    for (const b of buf) if (b < 250 && out.length < n) out.push(b % 10); // reject 250-255 so every digit is equally likely
+  }
+  return out.join('');
+}
+const cleanYarnId = (v) => String(v || '').replace(/[\s\-.]/g, '');
+const fmtYarnId = (id) => (id ? String(id).replace(/(\d{4})(?=\d)/g, '$1 ') : null);
+async function assignYarnId(DB, userId) {
+  for (let i = 0; i < 8; i++) {
+    try { await DB.prepare('UPDATE users SET yarn_id=? WHERE id=? AND yarn_id IS NULL').bind(randomDigits(12), userId).run(); }
+    catch {} // a clash with an existing ID fails the unique index; just try another
+    const row = await DB.prepare('SELECT yarn_id FROM users WHERE id=?').bind(userId).first();
+    if (row && row.yarn_id) return row.yarn_id;
+  }
+  throw new Error('Could not create a Yarn ID. Please try again.');
+}
+async function backfillYarnIds(DB) {
+  const r = await DB.prepare('SELECT id FROM users WHERE yarn_id IS NULL AND deleted=0 LIMIT 25').all();
+  for (const u of r.results || []) { try { await assignYarnId(DB, u.id); } catch {} }
+}
+function randToken(bytes = 18) {
+  const a = new Uint8Array(bytes); crypto.getRandomValues(a);
+  return b64url(a);
+}
+
+/* ---------- Lookup tickets: proof that a metered lookup happened (signed, short-lived, tied to the viewer) ---------- */
+async function serverSecret(DB) {
+  let row = await DB.prepare("SELECT v FROM config WHERE k='ticket_secret'").first();
+  if (!row) { await DB.prepare("INSERT OR IGNORE INTO config (k,v) VALUES ('ticket_secret',?)").bind(randToken(32)).run(); row = await DB.prepare("SELECT v FROM config WHERE k='ticket_secret'").first(); }
+  return row.v;
+}
+async function hmac(secret, text) {
+  const key = await crypto.subtle.importKey('raw', TE.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return b64url(new Uint8Array(await crypto.subtle.sign('HMAC', key, TE.encode(text))));
+}
+async function makeTicket(DB, viewerId, targetId, t) {
+  const exp = t + 30 * 60000;
+  return `${targetId}.${exp}.${await hmac(await serverSecret(DB), `${viewerId}.${targetId}.${exp}`)}`;
+}
+async function readTicket(DB, viewerId, ticket, t) {
+  const [target, exp, sig] = String(ticket || '').split('.');
+  if (!/^\d+$/.test(target || '') || !/^\d+$/.test(exp || '') || +exp < t || !sig) return null;
+  const want = await hmac(await serverSecret(DB), `${viewerId}.${target}.${exp}`);
+  return want === sig ? +target : null;
+}
+
+/* ---------- Who counts as "connected" (share a chat, or I saved them as a padi) ---------- */
+async function connectedTo(DB, meId, otherId) {
+  if (!otherId || otherId === meId) return false;
+  const r = await DB.prepare(`SELECT (EXISTS(SELECT 1 FROM members x JOIN members y ON y.chat_id=x.chat_id WHERE x.user_id=?1 AND y.user_id=?2)
+      OR EXISTS(SELECT 1 FROM padis WHERE owner_id=?1 AND padi_id=?2)) AS ok`).bind(meId, otherId).first();
+  return !!(r && r.ok);
+}
+// A target the caller may act on: either already connected, or reached through a valid lookup ticket
+async function reachable(DB, me, b, t) {
+  if (b.ticket) { const id = await readTicket(DB, me.id, b.ticket, t); return id ? { id, viaTicket: true } : null; }
+  const id = parseInt(b.user_id);
+  return (await connectedTo(DB, me.id, id)) ? { id, viaTicket: false } : null;
+}
+const blockedEither = async (DB, a, b) => !!(await DB.prepare('SELECT 1 FROM blocks WHERE (blocker_id=?1 AND blocked_id=?2) OR (blocker_id=?2 AND blocked_id=?1)').bind(a, b).first());
+const hasBlocked = async (DB, blocker, blocked) => !!(await DB.prepare('SELECT 1 FROM blocks WHERE blocker_id=? AND blocked_id=?').bind(blocker, blocked).first());
+
+/* ---------- Rate limits (per account and per network, enforced here on the server) ---------- */
+const envInt = (env, k, d) => { const v = parseInt(env[k]); return Number.isFinite(v) && v >= 0 ? v : d; };
+async function ipKey(req) { return 'ip:' + (await sha256Hex('yarn-rl|' + (req.headers.get('cf-connecting-ip') || 'unknown'))).slice(0, 20); }
+async function rateCheck(DB, t, rules, bump = true) {
+  for (const r of rules) {
+    const win = Math.floor(t / r.ms);
+    const row = await DB.prepare('SELECT n FROM rate_limits WHERE k=? AND win=?').bind(r.k, win).first();
+    if (row && row.n >= r.max) return r;
+  }
+  if (bump) for (const r of rules) {
+    const win = Math.floor(t / r.ms);
+    await DB.prepare('INSERT INTO rate_limits (k,win,n,exp) VALUES (?,?,1,?) ON CONFLICT(k,win) DO UPDATE SET n=n+1').bind(r.k, win, (win + 1) * r.ms).run();
+  }
+  if (Math.random() < 0.02) await DB.prepare('DELETE FROM rate_limits WHERE exp<?').bind(t).run();
+  return null;
+}
+async function rateBump(DB, t, rules) {
+  for (const r of rules) {
+    const win = Math.floor(t / r.ms);
+    await DB.prepare('INSERT INTO rate_limits (k,win,n,exp) VALUES (?,?,1,?) ON CONFLICT(k,win) DO UPDATE SET n=n+1').bind(r.k, win, (win + 1) * r.ms).run();
+  }
+}
+const HOUR = 3600000;
+function lookupRules(env, me, ip, t) {
+  const young = t - (me.created_at || 0) < 86400000; // brand-new accounts get half the allowance
+  const lim = (k, d) => Math.max(1, Math.floor(envInt(env, k, d) / (young ? 2 : 1)));
+  return {
+    all: [
+      { k: `lk:u:${me.id}:h`, ms: HOUR, max: lim('LOOKUP_LIMIT_HOUR', 30) },
+      { k: `lk:u:${me.id}:d`, ms: 86400000, max: lim('LOOKUP_LIMIT_DAY', 100) },
+      { k: `lk:${ip}:h`, ms: HOUR, max: envInt(env, 'LOOKUP_IP_LIMIT_HOUR', 300) }, // high: many people can share one network
+    ],
+    miss: [
+      { k: `lkm:u:${me.id}:h`, ms: HOUR, max: lim('LOOKUP_MISS_LIMIT_HOUR', 10) },
+      { k: `lkm:${ip}:h`, ms: HOUR, max: envInt(env, 'LOOKUP_MISS_IP_LIMIT_HOUR', 60) },
+    ],
+  };
+}
+function newChatRules(env, me, ip, t) {
+  const young = t - (me.created_at || 0) < 86400000;
+  return [
+    { k: `nc:u:${me.id}:d`, ms: 86400000, max: Math.max(1, Math.floor(envInt(env, 'NEW_CHAT_LIMIT_DAY', 40) / (young ? 2 : 1))) },
+    { k: `nc:${ip}:d`, ms: 86400000, max: envInt(env, 'NEW_CHAT_IP_LIMIT_DAY', 400) },
+  ];
+}
+const TOO_MANY = 'Too many lookups right now. Please wait a while and try again.';
+// The minimal card shown after a lookup: name and photo only
+async function minimalProfile(DB, me, u, t) {
+  const blockedMe = await hasBlocked(DB, u.id, me.id);
+  const padi = await DB.prepare('SELECT 1 FROM padis WHERE owner_id=? AND padi_id=?').bind(me.id, u.id).first();
+  return { id: u.id, display_name: u.display_name, avatar_key: blockedMe ? null : u.avatar_key || null, is_padi: !!padi, ticket: await makeTicket(DB, me.id, u.id, t) };
 }
 
 async function canSeeVibes(DB, meId, ownerId) {
@@ -113,7 +269,7 @@ async function vapidHeader(endpoint, keys, contact) {
 async function pushToChat(DB, chatId, senderId, origin) {
   try {
     const subs = (await DB.prepare(`SELECT ps.endpoint FROM push_subs ps JOIN members m ON m.user_id=ps.user_id
-        WHERE m.chat_id=? AND ps.user_id<>? AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.blocker_id=ps.user_id AND b.blocked_id=?)`)
+        WHERE m.chat_id=? AND ps.user_id<>? AND m.archived=0 AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.blocker_id=ps.user_id AND b.blocked_id=?)`)
       .bind(chatId, senderId, senderId).all()).results;
     if (!subs.length) return;
     const keys = await vapidKeys(DB);
@@ -149,6 +305,120 @@ const delBlob = (DB, key) => [
   DB.prepare('DELETE FROM blobs WHERE key=?').bind(key),
 ];
 
+/* ---------- Yarn AI: web search + model chain ---------- */
+const AI_CHITCHAT = /^(hi+|hello+|hey+|hola|yo|sup|thanks?( you)?|thank u|thx|ok(ay)?|cool|nice|lol|lmao|wow|good (morning|afternoon|evening|night)|how far|how are you|wetin dey|you dey|bye|goodnight)\b[\s!.?,]*(\w+[\s!.?]*)?$/i;
+const AI_FRESH = /\b(today|tonight|right now|currently|current|latest|recent(ly)?|news|breaking|this (week|month|year|weekend)|yesterday|tomorrow|202[4-9]|203\d|price|prices|rate|rates|exchange|naira|dollar|cedi|score|scores|fixture|fixtures|result|results|weather|forecast|who (is|are|won|wins)|president|governor|minister|ceo|election|trending|released?|launch(ed)?|stock|stocks|crypto|bitcoin|fuel|petrol|diesel|salary|jamb|waec|neco|schedule|opening hours|near me|how much|when (is|does|will|did)|where (can|do|to)|best .{2,40} in|top \d+|reviews?|vs\.?|versus|update|law|policy|tax|cbn|inec|nysc|visa|flight|ticket)\b/i;
+const AI_TRANSFORM = /^(please |pls |abeg |kindly )?(translate|rewrite|rephrase|paraphrase|proofread|correct|fix|shorten|summari[sz]e|improve|polish|format|continue|write (me )?(a |an |the |my )?\w*( \w+)? ?(poem|song|story|joke|caption|bio|speech|prayer|letter|email|message|text|cv|resume|apology|toast|essay|script|slogan|tweet|post)|tell me a (joke|story|riddle)|code|debug|solve|calculate|what is \d|\d+\s*[-+*/x×÷^]\s*\d+)/i;
+function shouldSearch(q) {
+  const t = String(q || '').trim();
+  if (t.length < 8 || AI_CHITCHAT.test(t)) return false;
+  if (AI_FRESH.test(t)) return true;
+  if (AI_TRANSFORM.test(t)) return false;
+  const words = t.split(/\s+/).length;
+  return words >= 3 && (/\?\s*$/.test(t) || /^(what|who|whom|whose|when|where|why|how|which|is|are|was|were|does|do|did|can|could|will|tell me|explain|give me|list|compare|define|meaning of|difference)\b/i.test(t));
+}
+function searchQuery(msgs) {
+  const users = msgs.filter((m) => m.role === 'user');
+  const last = (users[users.length - 1] || { content: '' }).content.trim();
+  const prev = users.length > 1 ? users[users.length - 2].content.trim() : '';
+  const q = last.split(/\s+/).length < 5 && prev ? prev.slice(0, 140) + ' ' + last : last;
+  return q.replace(/\s+/g, ' ').slice(0, 300);
+}
+async function sha256Hex(text) {
+  const h = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
+  return [...h].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+// Live web search through Tavily. Results are cached for 3 hours under a hash (the question text itself is never stored).
+async function webSearch(env, DB, q, t) {
+  const key = 'web:' + (await sha256Hex(q.toLowerCase()));
+  const hit = await DB.prepare('SELECT data FROM ai_cache WHERE k=? AND at>?').bind(key, t - 3 * 3600000).first();
+  if (hit) { try { return JSON.parse(hit.data); } catch {} }
+  const news = /\b(news|latest|breaking|headline|happened|today)\b/i.test(q);
+  const r = await fetch('https://api.tavily.com/search', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + env.TAVILY_API_KEY },
+    body: JSON.stringify({ query: q, search_depth: 'basic', max_results: 5, topic: news ? 'news' : 'general', include_answer: false }),
+    signal: AbortSignal.timeout(9000),
+  });
+  if (!r.ok) throw new Error('search ' + r.status);
+  const d = await r.json();
+  const results = (d.results || []).slice(0, 5)
+    .map((x) => ({ title: String(x.title || '').slice(0, 120), url: String(x.url || ''), content: String(x.content || '').replace(/\s+/g, ' ').slice(0, 650) }))
+    .filter((x) => /^https?:\/\//.test(x.url) && x.content);
+  if (!results.length) return null;
+  await DB.prepare('INSERT INTO ai_cache (k,data,at) VALUES (?,?,?) ON CONFLICT(k) DO UPDATE SET data=excluded.data, at=excluded.at').bind(key, JSON.stringify(results), t).run();
+  if (Math.random() < 0.05) await DB.prepare('DELETE FROM ai_cache WHERE at<?').bind(t - 86400000).run();
+  return results;
+}
+function aiSystem(me, t, results, canImages) {
+  const when = new Date(t).toLocaleString('en-NG', { timeZone: 'Africa/Lagos', dateStyle: 'full', timeStyle: 'short' });
+  let sys = `You are Yarn AI, a smart, honest and friendly assistant inside Yarn, a private chat app used mostly in Nigeria. The user is ${me.display_name}. Right now it is ${when} (Lagos time).\n\n`
+    + `HOW TO ANSWER\n`
+    + `- Accuracy comes first. Never invent facts, names, numbers, quotes, links or sources. If you are not sure, say so plainly.\n`
+    + `- Think carefully before answering maths, logic, code and multi-step questions, and show the key steps.\n`
+    + `- Be direct. Lead with the answer, then give useful detail. Keep simple answers short; go deeper only when the question needs it.\n`
+    + `- Use short paragraphs, **bold** for key terms, and bullet or numbered lists when they help. Use code blocks for code.\n`
+    + `- Assume a Nigerian context when it fits: ₦ for money, Nigerian places, laws and examples. If the user writes in Nigerian Pidgin, reply in Pidgin.\n`
+    + `- You can only see this conversation, not the user's chats, contacts or files. ${canImages ? 'The app (not you) creates pictures when the user says "draw ..." or taps the 🎨 button, so if they want a picture, tell them to do that.' : 'Image creation is not available right now.'}\n`;
+  if (results && results.length) {
+    sys += `\nLIVE WEB RESULTS (fetched just now, newer than your training data):\n`
+      + results.map((x, i) => `[${i + 1}] ${x.title}\n${x.url}\n${x.content}`).join('\n\n')
+      + `\n\nUse these results to answer. Prefer them over your own memory when they conflict. Cite the sources you use with their number like [1] or [2] right after the claim. If the results disagree or do not answer the question, say that honestly instead of guessing. Do not print the list of links yourself; the app shows them.`;
+  } else {
+    sys += `\nNo live web results are available for this message. If the question depends on recent events, current prices, rates, scores, or anything you cannot verify, say you can't check live information right now and give your best general knowledge clearly marked as possibly outdated.`;
+  }
+  return sys;
+}
+function aiChain(env) {
+  const big = [], small = [];
+  if (env.AI_API_KEY) {
+    const base = env.AI_API_URL || 'https://api.groq.com/openai/v1';
+    String(env.AI_API_MODELS || 'openai/gpt-oss-120b,llama-3.3-70b-versatile').split(',').map((x) => x.trim()).filter(Boolean)
+      .forEach((model) => big.push({ kind: 'openai', base, key: env.AI_API_KEY, model }));
+    String(env.AI_API_FALLBACK || 'llama-3.1-8b-instant').split(',').map((x) => x.trim()).filter(Boolean)
+      .forEach((model) => small.push({ kind: 'openai', base, key: env.AI_API_KEY, model }));
+  }
+  if (env.AI) {
+    big.push({ kind: 'cf', model: env.AI_MODEL || '@cf/meta/llama-3.3-70b-instruct-fp8-fast' });
+    small.push({ kind: 'cf', model: '@cf/meta/llama-3.1-8b-instruct-fast' }, { kind: 'cf', model: '@cf/meta/llama-3.2-3b-instruct' });
+  }
+  return [...big, ...small];
+}
+async function openStream(env, c, messages) {
+  if (c.kind === 'cf') return env.AI.run(c.model, { messages, stream: true, max_tokens: 1200 });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const body = { model: c.model, messages, stream: true, max_tokens: 1400, temperature: 0.5 };
+    if (/gpt-oss/i.test(c.model)) body.reasoning_effort = 'low';
+    const r = await fetch(c.base.replace(/\/$/, '') + '/chat/completions', {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + c.key }, body: JSON.stringify(body), signal: ctrl.signal,
+    });
+    if (!r.ok || !r.body) throw new Error('provider ' + r.status);
+    return r.body;
+  } finally { clearTimeout(timer); }
+}
+// Reads a streamed reply (OpenAI-style or Cloudflare-style) and hands over each piece of text
+async function pumpStream(readable, onPiece) {
+  const reader = readable.getReader(), dec = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += typeof value === 'string' ? value : dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === '[DONE]') continue;
+      let piece = '';
+      try { const j = JSON.parse(data); piece = j.response ?? j.choices?.[0]?.delta?.content ?? ''; } catch {}
+      if (typeof piece === 'string' && piece) await onPiece(piece);
+    }
+  }
+}
+
 const MSG_SELECT = `SELECT m.id,m.sender_id,m.type,m.body,m.media_key,m.created_at,m.reply_to,u.display_name AS sender_name,
   u.public_key AS sender_key,
   r.type AS reply_type, r.body AS reply_body, r.sender_id AS reply_sender, ru.display_name AS reply_name, ru.public_key AS reply_sender_key
@@ -159,6 +429,7 @@ export async function onRequest({ request, env, params, waitUntil }) {
   try {
     if (!env.DB) return err('Database not connected. Add a D1 binding named DB.', 500);
     const parts = Array.isArray(params.path) ? params.path : params.path ? [params.path] : [];
+    await ensureSchema(env.DB);
     return await route(request, env.DB, parts, waitUntil, env);
   } catch (e) {
     return err('Server error: ' + e.message, 500);
@@ -172,17 +443,30 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
   const body = async () => { try { return await req.json(); } catch { return {}; } };
   const t = now();
 
-  // ---------- Images (public, by random key) ----------
+  // ---------- Images: profile photos are public; chat and vibe media only for people allowed to see them ----------
+  const canReadMedia = async (viewerId, key) => !!(await DB.prepare(`SELECT 1 FROM messages m JOIN members mb ON mb.chat_id=m.chat_id AND mb.user_id=?2
+        WHERE m.media_key=?1 AND (m.hidden_for IS NULL OR m.hidden_for<>?2)
+      UNION ALL SELECT 1 FROM vibes v WHERE v.media_key=?1 AND v.expires_at>?3 AND (v.user_id=?2 OR (
+        EXISTS(SELECT 1 FROM padis WHERE owner_id=?2 AND padi_id=v.user_id) AND EXISTS(SELECT 1 FROM padis WHERE owner_id=v.user_id AND padi_id=?2)
+        AND NOT EXISTS(SELECT 1 FROM blocks WHERE (blocker_id=?2 AND blocked_id=v.user_id) OR (blocker_id=v.user_id AND blocked_id=?2))))
+      LIMIT 1`).bind(key, viewerId, t).first());
   if (m === 'GET' && parts[0] === 'media' && parts[1]) {
+    const avatar = await DB.prepare('SELECT 1 FROM users WHERE avatar_key=? AND deleted=0').bind(parts[1]).first();
+    if (!avatar) {
+      const viewer = await getUser(DB, req);
+      if (!viewer || !(await canReadMedia(viewer.id, parts[1]))) return new Response('Not found', { status: 404 });
+    }
     const row = await DB.prepare('SELECT mime,data FROM media WHERE key=?').bind(parts[1]).first();
     if (!row) return new Response('Not found', { status: 404 });
     const bin = Uint8Array.from(atob(row.data), (c) => c.charCodeAt(0));
-    return new Response(bin, { headers: { 'content-type': row.mime, 'cache-control': 'public, max-age=31536000, immutable' } });
+    return new Response(bin, { headers: { 'content-type': row.mime, 'cache-control': (avatar ? 'public' : 'private') + ', max-age=31536000, immutable' } });
   }
 
-  // ---------- Big files (download is public by random key; contents are encrypted) ----------
+  // ---------- Big files (videos, voice notes): encrypted, and only for people allowed to see them ----------
   if (m === 'GET' && parts[0] === 'blob' && parts[1]) {
-    const cache = { 'cache-control': 'public, max-age=31536000, immutable' };
+    const viewer = await getUser(DB, req);
+    if (!viewer || !(await canReadMedia(viewer.id, parts[1]))) return err('Not found', 404);
+    const cache = { 'cache-control': 'private, max-age=31536000, immutable' };
     if (parts[2] === undefined) {
       const b = await DB.prepare('SELECT chunks,size FROM blobs WHERE key=? AND done=1').bind(parts[1]).first();
       if (!b) return err('Not found', 404);
@@ -208,8 +492,9 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
     const r = await DB.prepare('INSERT INTO users (username,display_name,pass_hash,salt,created_at,last_seen,public_key,enc_priv,pw_v) VALUES (?,?,?,?,?,?,?,?,2)')
       .bind(username, display, hash, salt, t, t, b.public_key, b.enc_priv).run();
     const id = r.meta.last_row_id;
+    const yarnId = await assignYarnId(DB, id);
     const token = await newSession(DB, id, b.device);
-    return J({ token, user: meOut({ id, username, display_name: display, public_key: b.public_key }), enc_priv: b.enc_priv });
+    return J({ token, user: meOut({ id, username, display_name: display, public_key: b.public_key, yarn_id: yarnId, keep_archived: 1, silence_unknown: 0 }), enc_priv: b.enc_priv });
   }
   if (m === 'POST' && p === 'login') {
     const b = await body();
@@ -222,6 +507,7 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
       const salt = randHex(16);
       await DB.prepare('UPDATE users SET pass_hash=?,salt=?,pw_v=2 WHERE id=?').bind(await hashPass(String(b.password || ''), salt), salt, u.id).run();
     } else if ((await hashPass(String(b.password || ''), u.salt)) !== u.pass_hash) return err('Wrong username or password.', 401);
+    if (!u.yarn_id) u.yarn_id = await assignYarnId(DB, u.id);
     const token = await newSession(DB, u.id, b.device);
     return J({ token, user: meOut(u), enc_priv: u.enc_priv || null });
   }
@@ -252,7 +538,68 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
     return J({ ok: true });
   }
 
-  if (m === 'GET' && p === 'me') return J({ user: meOut(me), enc_priv: me.enc_priv || null });
+  if (m === 'GET' && p === 'me') {
+    if (!me.yarn_id) me.yarn_id = await assignYarnId(DB, me.id);
+    waitUntil(backfillYarnIds(DB).catch(() => {})); // gives IDs to older accounts that haven't signed in since the upgrade
+    return J({ user: meOut(me), enc_priv: me.enc_priv || null });
+  }
+
+  // ---------- Find people by exact Yarn ID or profile link (metered) ----------
+  if (m === 'GET' && p === 'users/lookup') {
+    const id = cleanYarnId(url.searchParams.get('id'));
+    if (!/^\d{12}$/.test(id)) return err('A Yarn ID has 12 digits. Check it and try again.');
+    const rules = lookupRules(env, me, await ipKey(req), t);
+    if (await rateCheck(DB, t, rules.miss, false)) return err(TOO_MANY, 429);
+    if (await rateCheck(DB, t, rules.all)) return err(TOO_MANY, 429);
+    if (id === me.yarn_id) return err("That's your own Yarn ID.");
+    const u = await DB.prepare('SELECT id,display_name,avatar_key FROM users WHERE yarn_id=? AND deleted=0').bind(id).first();
+    if (!u) { await rateBump(DB, t, rules.miss); return err('No account found with that Yarn ID. Check the number and try again.', 404); }
+    return J({ user: await minimalProfile(DB, me, u, t) });
+  }
+  if (m === 'GET' && parts[0] === 'link' && parts[1]) {
+    const tok = String(parts[1]);
+    const rules = lookupRules(env, me, await ipKey(req), t);
+    if (await rateCheck(DB, t, rules.miss, false)) return err(TOO_MANY, 429);
+    if (await rateCheck(DB, t, rules.all)) return err(TOO_MANY, 429);
+    const u = /^[A-Za-z0-9_-]{16,64}$/.test(tok) ? await DB.prepare('SELECT id,display_name,avatar_key FROM users WHERE link_token=? AND deleted=0').bind(tok).first() : null;
+    if (!u) { await rateBump(DB, t, rules.miss); return err('This profile link is not valid any more. It may have been replaced. Ask for a new one.', 404); }
+    if (u.id === me.id) return J({ self: true, user: { id: me.id, display_name: me.display_name, avatar_key: me.avatar_key || null } });
+    return J({ user: await minimalProfile(DB, me, u, t) });
+  }
+
+  // ---------- My shareable profile link ----------
+  if (p === 'profile/link' && m === 'GET') {
+    const row = await DB.prepare('SELECT link_token FROM users WHERE id=?').bind(me.id).first();
+    return J({ token: (row && row.link_token) || null });
+  }
+  if (p === 'profile/link' && m === 'POST') {
+    const b = await body();
+    if (b.action === 'off') { await DB.prepare('UPDATE users SET link_token=NULL WHERE id=?').bind(me.id).run(); return J({ token: null }); }
+    for (let i = 0; i < 5; i++) {
+      const tok = randToken(18);
+      try { await DB.prepare('UPDATE users SET link_token=? WHERE id=?').bind(tok, me.id).run(); return J({ token: tok }); } catch {}
+    }
+    return err('Could not make a new link. Please try again.');
+  }
+
+  // ---------- Report someone (only the content the reporter chose to include) ----------
+  if (m === 'POST' && p === 'reports') {
+    const b = await body();
+    const tgt = await reachable(DB, me, b, t);
+    if (!tgt || tgt.id === me.id) return err('Could not send this report.');
+    if (await rateCheck(DB, t, [{ k: `rp:u:${me.id}:d`, ms: 86400000, max: envInt(env, 'REPORT_LIMIT_DAY', 20) }])) return err('You have sent a lot of reports today. Please try again tomorrow.', 429);
+    const reason = ['spam', 'harassment', 'scam', 'inappropriate', 'impersonation', 'other'].includes(b.reason) ? b.reason : 'other';
+    const items = (Array.isArray(b.items) ? b.items : []).slice(0, 30).map((x) => ({
+      id: parseInt(x.id) || null, type: String(x.type || 'text').slice(0, 12), from: String(x.from || '').slice(0, 60), at: parseInt(x.at) || null, text: String(x.text || '').slice(0, 2000),
+    }));
+    let chatId = parseInt(b.chat_id) || null;
+    if (chatId && !(await DB.prepare('SELECT 1 FROM members WHERE chat_id=? AND user_id=?').bind(chatId, me.id).first())) chatId = null;
+    const stmts = [DB.prepare('INSERT INTO reports (reporter_id,target_id,chat_id,reason,details,content,created_at) VALUES (?,?,?,?,?,?,?)')
+      .bind(me.id, tgt.id, chatId, reason, String(b.details || '').slice(0, 1000), JSON.stringify(items), t)];
+    if (b.block) stmts.push(DB.prepare('INSERT OR IGNORE INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)').bind(me.id, tgt.id, t));
+    await DB.batch(stmts);
+    return J({ ok: true });
+  }
 
   // ---------- Upload big files in pieces ----------
   if (m === 'POST' && p === 'blob/start') {
@@ -292,7 +639,8 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
       DB.prepare('SELECT count FROM ai_usage WHERE user_id=? AND day=?').bind(me.id, today),
       DB.prepare('SELECT count FROM ai_usage WHERE user_id=? AND day=?').bind(me.id, 'img:' + today),
     ]);
-    return J({ enabled: !!env.AI, used: u.results[0]?.count || 0, limit: AI_LIMIT, img_used: im.results[0]?.count || 0, img_limit: IMG_LIMIT });
+    const chain = aiChain(env);
+    return J({ enabled: chain.length > 0, web: !!env.TAVILY_API_KEY, images: !!env.AI, engine: chain[0] ? chain[0].model : null, used: u.results[0]?.count || 0, limit: AI_LIMIT, img_used: im.results[0]?.count || 0, img_limit: IMG_LIMIT });
   }
   // Create an image from a description
   if (m === 'POST' && p === 'ai/image') {
@@ -318,28 +666,56 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
     return err("Couldn't create that image right now. Please try again in a minute.", 503);
   }
   if (m === 'POST' && p === 'ai/chat') {
-    if (!env.AI) return err('Yarn AI is not switched on yet. The app owner needs to add the Workers AI binding.', 503);
+    const chain = aiChain(env);
+    if (!chain.length) return err('Yarn AI is not switched on yet. The app owner needs to add the AI key or the Workers AI binding.', 503);
     const b = await body();
-    const msgs = (Array.isArray(b.messages) ? b.messages : []).slice(-12)
+    let msgs = (Array.isArray(b.messages) ? b.messages : []).slice(-16)
       .filter((x) => x && ['user', 'assistant'].includes(x.role) && typeof x.content === 'string' && x.content.trim())
       .map((x) => ({ role: x.role, content: x.content.slice(0, 4000) }));
     if (!msgs.length || msgs[msgs.length - 1].role !== 'user') return err('Ask a question first.');
+    let total = 0;
+    const keep = [];
+    for (let k = msgs.length - 1; k >= 0; k--) { total += msgs[k].content.length; if (total > 9000 && keep.length) break; keep.unshift(msgs[k]); }
+    msgs = keep;
+    while (msgs.length && msgs[0].role !== 'user') msgs.shift();
     const used = await DB.prepare('SELECT count FROM ai_usage WHERE user_id=? AND day=?').bind(me.id, today).first();
     if (used && used.count >= AI_LIMIT) return err(`You've used today's ${AI_LIMIT} Yarn AI messages. They reset tomorrow. 🌙`, 429);
     await DB.prepare('INSERT INTO ai_usage (user_id,day,count) VALUES (?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET count=count+1').bind(me.id, today).run();
-    const system = `You are Yarn AI, a warm, helpful assistant inside Yarn, a private chat app used mostly in Nigeria. `
-      + `Give clear, practical answers. Keep replies fairly short unless asked for detail. Use short paragraphs and simple bullet lists when helpful. `
-      + `If the user writes in Nigerian Pidgin, reply in Pidgin. You cannot see the user's chats, contacts or files, only this conversation. `
-      + `The user's name is ${me.display_name}. Today is ${new Date(t).toDateString()}.`;
-    const models = [env.AI_MODEL || '@cf/meta/llama-3.1-8b-instruct-fast', '@cf/meta/llama-3.1-8b-instruct', '@cf/meta/llama-3.2-3b-instruct'];
-    for (const model of models) {
+    const wantWeb = b.web !== false && !!env.TAVILY_API_KEY;
+    const WEB_LIMIT = parseInt(env.AI_SEARCH_LIMIT || '8');
+    const { readable, writable } = new TransformStream();
+    const w = writable.getWriter(), enc = new TextEncoder();
+    const send = (o) => w.write(enc.encode('data: ' + (typeof o === 'string' ? o : JSON.stringify(o)) + '\n\n'));
+    waitUntil((async () => {
+      let sent = 0, results = null, notice = null;
       try {
-        const stream = await env.AI.run(model, { messages: [{ role: 'system', content: system }, ...msgs], stream: true, max_tokens: 900 });
-        return new Response(stream, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store' } });
-      } catch {}
-    }
-    await DB.prepare('UPDATE ai_usage SET count=MAX(count-1,0) WHERE user_id=? AND day=?').bind(me.id, today).run();
-    return err('Yarn AI is busy right now. Please try again in a minute.', 503);
+        const q = searchQuery(msgs);
+        if (wantWeb && shouldSearch(q)) {
+          const wk = 'web:' + today;
+          const wu = await DB.prepare('SELECT count FROM ai_usage WHERE user_id=? AND day=?').bind(me.id, wk).first();
+          if (!wu || wu.count < WEB_LIMIT) {
+            await send({ status: 'searching' });
+            await DB.prepare('INSERT INTO ai_usage (user_id,day,count) VALUES (?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET count=count+1').bind(me.id, wk).run();
+            try { results = await webSearch(env, DB, q, t); } catch {}
+            if (results) await send({ sources: results.map(({ title, url }) => ({ title, url })) });
+            else notice = "I couldn't search the web for this one, so the answer may be out of date.";
+          } else notice = "You've used today's web searches, so this answer comes from my own knowledge and may be out of date.";
+        }
+        const messages = [{ role: 'system', content: aiSystem(me, t, results, !!env.AI) }, ...msgs];
+        for (const c of chain) {
+          try {
+            const stream = await openStream(env, c, messages);
+            await pumpStream(stream, async (piece) => { sent += piece.length; await send({ response: piece }); });
+            if (sent) { await send({ model: c.model }); break; }
+          } catch { if (sent) break; }
+        }
+        if (!sent) {
+          await DB.prepare('UPDATE ai_usage SET count=MAX(count-1,0) WHERE user_id=? AND day=?').bind(me.id, today).run();
+          await send({ error: 'Yarn AI is busy right now. Please try again in a minute.' });
+        } else if (notice) await send({ notice });
+      } catch {} finally { try { await send('[DONE]'); await w.close(); } catch {} }
+    })());
+    return new Response(readable, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store', 'x-accel-buffering': 'no' } });
   }
 
   // ---------- Calls: 1-to-1 voice & video (WebRTC; audio/video flow phone-to-phone, encrypted) ----------
@@ -368,11 +744,15 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
     if (!ch) return err('Chat not found.');
     if (ch.is_group) return err('Calls work in 1-to-1 chats for now.');
     const other = +String(ch.dm_key).split(':').find((x) => +x !== me.id);
-    const ok = await DB.prepare('SELECT (SELECT deleted FROM users WHERE id=?2) AS gone, EXISTS(SELECT 1 FROM blocks WHERE (blocker_id=?1 AND blocked_id=?2) OR (blocker_id=?2 AND blocked_id=?1)) AS bl').bind(me.id, other).first();
-    if (ok.gone) return err('This account was deleted.');
-    if (ok.bl) return err("You can't call this person.");
-    const r = await DB.prepare("INSERT INTO calls (chat_id,caller_id,callee_id,kind,status,created_at) VALUES (?,?,?,?,'ringing',?)").bind(chatId, me.id, other, kind, t).run();
-    waitUntil(pushToUser(DB, other, url.origin));
+    const callee = await DB.prepare('SELECT deleted, silence_unknown FROM users WHERE id=?').bind(other).first();
+    if (!callee || callee.deleted) return err('This account was deleted.');
+    if (await hasBlocked(DB, me.id, other)) return err('You blocked this person. Unblock them to call.');
+    // silent=2: they blocked the caller (never rings, never revealed). silent=1: they silence calls from people they haven't saved.
+    let silent = 0;
+    if (await hasBlocked(DB, other, me.id)) silent = 2;
+    else if (callee.silence_unknown && !(await DB.prepare('SELECT 1 FROM padis WHERE owner_id=? AND padi_id=?').bind(other, me.id).first())) silent = 1;
+    const r = await DB.prepare("INSERT INTO calls (chat_id,caller_id,callee_id,kind,status,created_at,silent) VALUES (?,?,?,?,'ringing',?,?)").bind(chatId, me.id, other, kind, t, silent).run();
+    if (!silent) waitUntil(pushToUser(DB, other, url.origin));
     return J({ id: r.meta.last_row_id });
   }
   if (parts[0] === 'calls' && /^\d+$/.test(parts[1] || '')) {
@@ -393,7 +773,7 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
       return J({ status: call.status, signals: r.results.map((x) => ({ id: x.id, type: x.type, data: JSON.parse(x.data) })) });
     }
     if (m === 'POST' && sub === 'answer') {
-      if (call.callee_id !== me.id || call.status !== 'ringing') return err('This call has ended.');
+      if (call.callee_id !== me.id || call.status !== 'ringing' || call.silent === 2) return err('This call has ended.');
       await DB.prepare("UPDATE calls SET status='active', answered_at=? WHERE id=?").bind(t, cid).run();
       return J({ ok: true });
     }
@@ -405,12 +785,14 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
       const secs = call.answered_at ? Math.round((t - call.answered_at) / 1000) : 0;
       const text = status === 'ended' ? `📞 ${label[0].toUpperCase() + label.slice(1)} · ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
         : status === 'declined' ? `📵 Declined ${label}` : `📵 Missed ${label}`;
-      await DB.batch([
+      const hidden = call.silent === 2 ? call.callee_id : null; // a blocked caller's attempt is never shown to the person who blocked them
+      const stmts = [
         DB.prepare('UPDATE calls SET status=?, ended_at=? WHERE id=?').bind(status, t, cid),
         DB.prepare('DELETE FROM call_signals WHERE call_id=?').bind(cid),
-        DB.prepare("INSERT INTO messages (chat_id,sender_id,type,body,created_at) VALUES (?,?,'system',?,?)").bind(call.chat_id, call.caller_id, text, t),
-        DB.prepare('UPDATE chats SET last_msg_at=? WHERE id=?').bind(t, call.chat_id),
-      ]);
+        DB.prepare("INSERT INTO messages (chat_id,sender_id,type,body,created_at,hidden_for) VALUES (?,?,'system',?,?,?)").bind(call.chat_id, call.caller_id, text, t, hidden),
+      ];
+      if (!hidden) stmts.push(DB.prepare('UPDATE chats SET last_msg_at=? WHERE id=?').bind(t, call.chat_id));
+      await DB.batch(stmts);
       return J({ ok: true, status });
     }
   }
@@ -438,16 +820,16 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
   if (m === 'GET' && p === 'push/peek') {
     const r = await DB.prepare(`SELECT m.id, m.chat_id, m.type, m.body, m.created_at, m.sender_id, u.display_name AS sender_name, u.public_key AS sender_key,
         c.is_group, c.name AS chat_name, (SELECT nickname FROM padis pp WHERE pp.owner_id=?1 AND pp.padi_id=m.sender_id) AS nick,
-        (SELECT COUNT(*) FROM messages mx WHERE mx.chat_id=c.id AND mx.id>mem.last_read_id AND mx.sender_id<>?1 AND mx.type IN ('text','image','video','voice')) AS unread
+        (SELECT COUNT(*) FROM messages mx WHERE mx.chat_id=c.id AND mx.id>mem.last_read_id AND mx.sender_id<>?1 AND mx.type IN ('text','image','video','voice') AND (mx.hidden_for IS NULL OR mx.hidden_for<>?1)) AS unread
       FROM members mem JOIN chats c ON c.id=mem.chat_id
-      JOIN messages m ON m.id=(SELECT MAX(id) FROM messages mx WHERE mx.chat_id=c.id AND mx.sender_id<>?1 AND mx.type IN ('text','image','video','voice'))
+      JOIN messages m ON m.id=(SELECT MAX(id) FROM messages mx WHERE mx.chat_id=c.id AND mx.sender_id<>?1 AND mx.type IN ('text','image','video','voice') AND (mx.hidden_for IS NULL OR mx.hidden_for<>?1))
       JOIN users u ON u.id=m.sender_id
-      WHERE mem.user_id=?1 AND m.id>mem.last_read_id
+      WHERE mem.user_id=?1 AND mem.archived=0 AND m.id>mem.last_read_id
       ORDER BY m.id DESC LIMIT 5`).bind(me.id).all();
-    await DB.prepare('UPDATE members SET delivered_id=(SELECT MAX(id) FROM messages WHERE chat_id=members.chat_id) WHERE user_id=? AND delivered_id<(SELECT COALESCE(MAX(id),0) FROM messages WHERE chat_id=members.chat_id)').bind(me.id).run();
-    const inc = await DB.prepare(`SELECT (SELECT json_object('id',cl.id,'kind',cl.kind,'chat_id',cl.chat_id,'caller_id',cl.caller_id,'display_name',cu.display_name,'username',cu.username,'avatar_key',cu.avatar_key,
+    await DB.prepare('UPDATE members SET delivered_id=(SELECT COALESCE(MAX(id),0) FROM messages WHERE chat_id=members.chat_id AND (hidden_for IS NULL OR hidden_for<>?1)) WHERE user_id=?1 AND delivered_id<(SELECT COALESCE(MAX(id),0) FROM messages WHERE chat_id=members.chat_id AND (hidden_for IS NULL OR hidden_for<>?1))').bind(me.id).run();
+    const inc = await DB.prepare(`SELECT (SELECT json_object('id',cl.id,'kind',cl.kind,'chat_id',cl.chat_id,'caller_id',cl.caller_id,'display_name',cu.display_name,'username',NULL,'avatar_key',cu.avatar_key,
         'nick',(SELECT nickname FROM padis pp WHERE pp.owner_id=?1 AND pp.padi_id=cl.caller_id))
-      FROM calls cl JOIN users cu ON cu.id=cl.caller_id WHERE cl.callee_id=?1 AND cl.status='ringing' AND cl.created_at>?2 ORDER BY cl.id DESC LIMIT 1) AS c`).bind(me.id, t - 45000).first();
+      FROM calls cl JOIN users cu ON cu.id=cl.caller_id WHERE cl.callee_id=?1 AND cl.status='ringing' AND cl.silent=0 AND cl.created_at>?2 ORDER BY cl.id DESC LIMIT 1) AS c`).bind(me.id, t - 45000).first();
     return J({ messages: r.results, call: inc && inc.c ? JSON.parse(inc.c) : null });
   }
 
@@ -477,7 +859,7 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
       DB.prepare("DELETE FROM blobs WHERE key IN (SELECT media_key FROM vibes WHERE user_id=? AND type='video')").bind(me.id),
       DB.prepare('DELETE FROM vibes WHERE user_id=?').bind(me.id),
       DB.prepare('DELETE FROM media WHERE key=?').bind(me.avatar_key || '-'),
-      DB.prepare("UPDATE users SET username=?,display_name='Deleted account',about='',avatar_key=NULL,pass_hash='',salt='',enc_priv=NULL,seen_privacy='nobody',deleted=1 WHERE id=?")
+      DB.prepare("UPDATE users SET username=?,display_name='Deleted account',about='',avatar_key=NULL,pass_hash='',salt='',enc_priv=NULL,seen_privacy='nobody',link_token=NULL,deleted=1 WHERE id=?")
         .bind('deleted_' + me.id + '_' + randHex(4), me.id),
       DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(me.id),
       DB.prepare('DELETE FROM push_subs WHERE user_id=?').bind(me.id),
@@ -497,9 +879,11 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
     const display = b.display_name !== undefined ? String(b.display_name).trim().slice(0, 40) : me.display_name;
     const about = b.about !== undefined ? String(b.about).trim().slice(0, 140) : me.about || '';
     const privacy = ['everyone', 'padis', 'nobody'].includes(b.seen_privacy) ? b.seen_privacy : me.seen_privacy || 'everyone';
+    const keep = b.keep_archived !== undefined ? (b.keep_archived ? 1 : 0) : (me.keep_archived === null || me.keep_archived === undefined ? 1 : me.keep_archived);
+    const silence = b.silence_unknown !== undefined ? (b.silence_unknown ? 1 : 0) : me.silence_unknown || 0;
     if (!display) return err('Enter your name.');
-    await DB.prepare('UPDATE users SET display_name=?,about=?,seen_privacy=? WHERE id=?').bind(display, about, privacy, me.id).run();
-    return J({ user: meOut({ ...me, display_name: display, about, seen_privacy: privacy }) });
+    await DB.prepare('UPDATE users SET display_name=?,about=?,seen_privacy=?,keep_archived=?,silence_unknown=? WHERE id=?').bind(display, about, privacy, keep, silence, me.id).run();
+    return J({ user: meOut({ ...me, display_name: display, about, seen_privacy: privacy, keep_archived: keep, silence_unknown: silence }) });
   }
   if (m === 'POST' && p === 'profile/avatar') {
     const b = await body();
@@ -532,38 +916,33 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
     return J({ ok: true });
   }
 
-  // ---------- Find people (exact username only) ----------
-  if (m === 'GET' && p === 'users/find') {
-    const u = cleanUsername(url.searchParams.get('u'));
-    if (!u) return err('Type a username.');
-    if (u === me.username) return err("That's your own username.");
-    const user = u.startsWith('deleted_') ? null : await profileOf(DB, me, true, u);
-    if (!user) return err('No one has that username. Check the spelling.', 404);
-    return J({ user });
-  }
+  // ---------- Someone's full profile: only if we're already connected (shared chat or saved padi) ----------
   if (m === 'GET' && parts[0] === 'users' && /^\d+$/.test(parts[1] || '')) {
-    const user = await profileOf(DB, me, false, +parts[1]);
+    const id = +parts[1];
+    if (id !== me.id && !(await connectedTo(DB, me.id, id))) return err('User not found.', 404);
+    const user = await profileOf(DB, me, id);
     if (!user) return err('User not found.', 404);
     return J({ user });
   }
 
   // ---------- Padis (saved contacts) ----------
   if (m === 'GET' && p === 'padis') {
-    const r = await DB.prepare(`SELECT u.id,u.username,u.display_name,u.about,u.avatar_key,u.last_seen,u.seen_privacy,u.public_key,p.nickname,
+    const r = await DB.prepare(`SELECT u.id,u.yarn_id,u.display_name,u.about,u.avatar_key,u.last_seen,u.seen_privacy,u.public_key,p.nickname,
         EXISTS(SELECT 1 FROM padis b WHERE b.owner_id=u.id AND b.padi_id=?1) AS mutual
       FROM padis p JOIN users u ON u.id=p.padi_id WHERE p.owner_id=?1
       ORDER BY LOWER(COALESCE(p.nickname,u.display_name))`).bind(me.id).all();
     const padis = r.results.map((u) => ({
-      id: u.id, username: u.username, display_name: u.display_name, about: u.about || '', avatar_key: u.avatar_key,
+      id: u.id, username: null, yarn_id: u.yarn_id || null, display_name: u.display_name, about: u.about || '', avatar_key: u.avatar_key,
       nickname: u.nickname, mutual: !!u.mutual, last_seen: showSeen(u.last_seen, u.seen_privacy, u.mutual), public_key: u.public_key,
     }));
     return J({ padis, now: t });
   }
   if (m === 'POST' && p === 'padis') {
     const b = await body();
-    const id = parseInt(b.user_id);
-    if (!id || id === me.id) return err('Pick someone to add.');
-    if (!(await DB.prepare('SELECT 1 FROM users WHERE id=?').bind(id).first())) return err('User not found.');
+    const tgt = await reachable(DB, me, b, t);
+    const id = tgt ? tgt.id : 0;
+    if (!id || id === me.id) return err('Add padis using their Yarn ID or profile link.');
+    if (!(await DB.prepare('SELECT 1 FROM users WHERE id=? AND deleted=0').bind(id).first())) return err('User not found.');
     const nick = b.nickname !== undefined ? String(b.nickname || '').trim().slice(0, 40) || null : undefined;
     if (nick === undefined)
       await DB.prepare('INSERT OR IGNORE INTO padis (owner_id,padi_id,created_at) VALUES (?,?,?)').bind(me.id, id, t).run();
@@ -580,13 +959,14 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
 
   // ---------- Blocking ----------
   if (m === 'GET' && p === 'blocks') {
-    const r = await DB.prepare('SELECT u.id,u.username,u.display_name,u.avatar_key FROM blocks b JOIN users u ON u.id=b.blocked_id WHERE b.blocker_id=? ORDER BY b.created_at DESC')
+    const r = await DB.prepare('SELECT u.id,NULL AS username,u.display_name,u.avatar_key FROM blocks b JOIN users u ON u.id=b.blocked_id WHERE b.blocker_id=? ORDER BY b.created_at DESC')
       .bind(me.id).all();
     return J({ users: r.results });
   }
   if (m === 'POST' && p === 'blocks') {
     const b = await body();
-    const id = parseInt(b.user_id);
+    const tgt = await reachable(DB, me, b, t);
+    const id = tgt ? tgt.id : 0;
     if (!id || id === me.id) return err('Pick someone to block.');
     await DB.prepare('INSERT OR IGNORE INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)').bind(me.id, id, t).run();
     return J({ ok: true });
@@ -612,7 +992,7 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
       DB.prepare(`SELECT v.id,v.type,v.body,v.bg,v.media_key,v.created_at,
           (SELECT COUNT(*) FROM vibe_views vv WHERE vv.vibe_id=v.id) AS views
         FROM vibes v WHERE v.user_id=? AND v.expires_at>? ORDER BY v.id`).bind(me.id, t),
-      DB.prepare(`SELECT v.id,v.user_id,v.type,v.body,v.bg,v.media_key,v.created_at,u.display_name,u.username,u.avatar_key,u.public_key AS owner_key,p.nickname,
+      DB.prepare(`SELECT v.id,v.user_id,v.type,v.body,v.bg,v.media_key,v.created_at,u.display_name,NULL AS username,u.avatar_key,u.public_key AS owner_key,p.nickname,
           EXISTS(SELECT 1 FROM vibe_views vv WHERE vv.vibe_id=v.id AND vv.viewer_id=?1) AS seen
         FROM padis p
         JOIN padis b ON b.owner_id=p.padi_id AND b.padi_id=p.owner_id
@@ -664,7 +1044,7 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
     }
     if (v.user_id !== me.id) return err('That is not your vibe.', 403);
     if (m === 'GET' && parts[2] === 'viewers') {
-      const r = await DB.prepare('SELECT u.id,u.username,u.display_name,u.avatar_key,vv.viewed_at FROM vibe_views vv JOIN users u ON u.id=vv.viewer_id WHERE vv.vibe_id=? ORDER BY vv.viewed_at DESC')
+      const r = await DB.prepare('SELECT u.id,NULL AS username,u.display_name,u.avatar_key,vv.viewed_at FROM vibe_views vv JOIN users u ON u.id=vv.viewer_id WHERE vv.vibe_id=? ORDER BY vv.viewed_at DESC')
         .bind(vid).all();
       return J({ viewers: r.results });
     }
@@ -684,10 +1064,10 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
 
   // ---------- Chats ----------
   if (m === 'GET' && p === 'chats') {
-    await DB.prepare('UPDATE members SET delivered_id=(SELECT MAX(id) FROM messages WHERE chat_id=members.chat_id) WHERE user_id=? AND delivered_id<(SELECT COALESCE(MAX(id),0) FROM messages WHERE chat_id=members.chat_id)').bind(me.id).run();
+    await DB.prepare('UPDATE members SET delivered_id=(SELECT COALESCE(MAX(id),0) FROM messages WHERE chat_id=members.chat_id AND (hidden_for IS NULL OR hidden_for<>?1)) WHERE user_id=?1 AND delivered_id<(SELECT COALESCE(MAX(id),0) FROM messages WHERE chat_id=members.chat_id AND (hidden_for IS NULL OR hidden_for<>?1))').bind(me.id).run();
     const r = await DB.prepare(`
       SELECT c.id, c.is_group, c.name, c.last_msg_at,
-        o.id AS other_id, o.display_name AS other_name, o.username AS other_username, o.last_seen AS other_seen,
+        o.id AS other_id, o.display_name AS other_name, NULL AS other_username, o.yarn_id AS other_yarn_id, o.last_seen AS other_seen, mem.archived AS archived,
         o.avatar_key AS other_avatar, o.seen_privacy AS other_privacy,
         EXISTS(SELECT 1 FROM padis p WHERE p.owner_id=o.id AND p.padi_id=?1) AS other_has_me,
         EXISTS(SELECT 1 FROM blocks bl WHERE bl.blocker_id=o.id AND bl.blocked_id=?1) AS other_blocked_me,
@@ -696,21 +1076,23 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
         su.display_name AS last_sender_name, su.public_key AS last_sender_key, o.deleted AS other_deleted,
         (SELECT MIN(mm.last_read_id) FROM members mm WHERE mm.chat_id=c.id AND mm.user_id<>?1) AS others_read,
         (SELECT MIN(MAX(mm.delivered_id, mm.last_read_id)) FROM members mm WHERE mm.chat_id=c.id AND mm.user_id<>?1) AS others_delivered,
-        (SELECT COUNT(*) FROM messages mx WHERE mx.chat_id=c.id AND mx.id>mem.last_read_id AND mx.sender_id<>?1 AND mx.type NOT IN ('system','deleted')) AS unread,
-        (SELECT COUNT(*) FROM members mt WHERE mt.chat_id=c.id AND mt.user_id<>?1 AND mt.typing_until>?2) AS typing
+        (SELECT COUNT(*) FROM messages mx WHERE mx.chat_id=c.id AND mx.id>mem.last_read_id AND mx.sender_id<>?1 AND mx.type NOT IN ('system','deleted') AND (mx.hidden_for IS NULL OR mx.hidden_for<>?1)) AS unread,
+        (SELECT COUNT(*) FROM members mt WHERE mt.chat_id=c.id AND mt.user_id<>?1 AND mt.typing_until>?2 AND mt.user_id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id=?1)) AS typing
       FROM members mem
       JOIN chats c ON c.id=mem.chat_id
       LEFT JOIN users o ON c.is_group=0 AND o.id=(SELECT m2.user_id FROM members m2 WHERE m2.chat_id=c.id AND m2.user_id<>?1 LIMIT 1)
-      LEFT JOIN messages lm ON lm.id=(SELECT MAX(id) FROM messages WHERE chat_id=c.id)
+      LEFT JOIN messages lm ON lm.id=(SELECT MAX(id) FROM messages WHERE chat_id=c.id AND (hidden_for IS NULL OR hidden_for<>?1))
       LEFT JOIN users su ON su.id=lm.sender_id
       WHERE mem.user_id=?1
       ORDER BY c.last_msg_at DESC LIMIT 100`).bind(me.id, t).all();
-    const inc = await DB.prepare(`SELECT (SELECT json_object('id',cl.id,'kind',cl.kind,'chat_id',cl.chat_id,'caller_id',cl.caller_id,'display_name',cu.display_name,'username',cu.username,'avatar_key',cu.avatar_key,
+    const inc = await DB.prepare(`SELECT (SELECT json_object('id',cl.id,'kind',cl.kind,'chat_id',cl.chat_id,'caller_id',cl.caller_id,'display_name',cu.display_name,'username',NULL,'avatar_key',cu.avatar_key,
         'nick',(SELECT nickname FROM padis pp WHERE pp.owner_id=?1 AND pp.padi_id=cl.caller_id))
-      FROM calls cl JOIN users cu ON cu.id=cl.caller_id WHERE cl.callee_id=?1 AND cl.status='ringing' AND cl.created_at>?2 ORDER BY cl.id DESC LIMIT 1) AS c`).bind(me.id, t - 45000).first();
+      FROM calls cl JOIN users cu ON cu.id=cl.caller_id WHERE cl.callee_id=?1 AND cl.status='ringing' AND cl.silent=0 AND cl.created_at>?2 ORDER BY cl.id DESC LIMIT 1) AS c`).bind(me.id, t - 45000).first();
     const chats = r.results.map((c) => {
       c.other_seen = c.other_blocked_me ? 0 : showSeen(c.other_seen, c.other_privacy, c.other_has_me);
       if (c.other_blocked_me) c.other_avatar = null;
+      c.other_yarn_id = c.other_deleted ? null : c.other_yarn_id;
+      c.archived = !!c.archived;
       delete c.other_privacy; delete c.other_has_me; delete c.other_blocked_me;
       return c;
     });
@@ -719,18 +1101,20 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
 
   if (m === 'POST' && p === 'chats/direct') {
     const b = await body();
-    const other = b.user_id
-      ? await DB.prepare('SELECT id,deleted FROM users WHERE id=?').bind(parseInt(b.user_id)).first()
-      : await DB.prepare('SELECT id,deleted FROM users WHERE username=?').bind(cleanUsername(b.username)).first();
-    if (!other) return err('No one has that username.');
-    if (other.id === me.id) return err("That's your own username.");
-    if (other.deleted) return err('This account was deleted.');
+    const tgt = await reachable(DB, me, b, t);
+    if (!tgt) return err('Start a chat using their Yarn ID or profile link.', 404);
+    const other = await DB.prepare('SELECT id,deleted FROM users WHERE id=?').bind(tgt.id).first();
+    if (!other || other.deleted) return err('No account found with that Yarn ID.');
+    if (other.id === me.id) return err("That's your own Yarn ID.");
     const key = [me.id, other.id].sort((a, c) => a - c).join(':');
     const found = await DB.prepare('SELECT id FROM chats WHERE dm_key=?').bind(key).first();
     if (found) {
       await DB.prepare('INSERT OR IGNORE INTO members (chat_id,user_id,joined_at) VALUES (?,?,?)').bind(found.id, me.id, t).run();
       return J({ id: found.id });
     }
+    // Starting a conversation with someone new is limited per account and per network. No approval is needed.
+    if (!(await connectedTo(DB, me.id, other.id)) && (await rateCheck(DB, t, newChatRules(env, me, await ipKey(req), t))))
+      return err("You've started a lot of new chats today. Please try again later.", 429);
     const r = await DB.prepare('INSERT INTO chats (is_group,dm_key,created_by,created_at,last_msg_at) VALUES (0,?,?,?,?)').bind(key, me.id, t, t).run();
     const id = r.meta.last_row_id;
     await DB.batch([
@@ -745,10 +1129,17 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
     const name = String(b.name || '').trim().slice(0, 50);
     if (!name) return err('Give the group a name.');
     const ids = [...new Set((b.user_ids || []).map((x) => parseInt(x)).filter((x) => x && x !== me.id))].slice(0, 50);
-    let users = [];
-    if (ids.length) {
-      const r = await DB.prepare(`SELECT id FROM users WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all();
-      users = r.results;
+    const users = [], seen = new Set([me.id]);
+    for (const uid of ids) {
+      if (seen.has(uid)) continue;
+      if ((await connectedTo(DB, me.id, uid)) && !(await hasBlocked(DB, uid, me.id)) && (await DB.prepare('SELECT 1 FROM users WHERE id=? AND deleted=0').bind(uid).first())) { users.push({ id: uid }); seen.add(uid); }
+    }
+    // People found by Yarn ID or profile link (signed lookup tickets); adding someone new counts toward the new-contact limit
+    for (const tk of (Array.isArray(b.tickets) ? b.tickets : []).slice(0, 50)) {
+      const uid = await readTicket(DB, me.id, tk, t);
+      if (!uid || seen.has(uid) || (await hasBlocked(DB, uid, me.id)) || !(await DB.prepare('SELECT 1 FROM users WHERE id=? AND deleted=0').bind(uid).first())) continue;
+      if (!(await connectedTo(DB, me.id, uid)) && (await rateCheck(DB, t, newChatRules(env, me, await ipKey(req), t)))) return err("You've added a lot of new people today. Please try again later.", 429);
+      users.push({ id: uid }); seen.add(uid);
     }
     const cr = await DB.prepare('INSERT INTO chats (is_group,name,created_by,created_at,last_msg_at) VALUES (1,?,?,?,?)').bind(name, me.id, t, t).run();
     const id = cr.meta.last_row_id;
@@ -770,7 +1161,7 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
 
     if (m === 'GET' && sub === '') {
       const chat = await DB.prepare('SELECT id,is_group,name,created_by FROM chats WHERE id=?').bind(id).first();
-      const r = await DB.prepare(`SELECT u.id,u.username,u.display_name,u.avatar_key,u.last_seen,u.seen_privacy,u.public_key,u.deleted,
+      const r = await DB.prepare(`SELECT u.id,CASE WHEN u.id=?2 THEN u.username END AS username,u.display_name,u.avatar_key,u.last_seen,u.seen_privacy,u.public_key,u.deleted,
           EXISTS(SELECT 1 FROM padis p WHERE p.owner_id=u.id AND p.padi_id=?2) AS has_me,
           (SELECT nickname FROM padis p WHERE p.owner_id=?2 AND p.padi_id=u.id) AS nickname
         FROM members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=?1 ORDER BY u.display_name`).bind(id, me.id).all();
@@ -785,7 +1176,8 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
         avatar_key: blocked_me && u.id === otherId ? null : u.avatar_key,
         last_seen: u.id === me.id ? u.last_seen : blocked_me && u.id === otherId ? 0 : showSeen(u.last_seen, u.seen_privacy, u.has_me),
       }));
-      return J({ chat, members, blocked_by_me, blocked_me, now: t });
+      const arch = await DB.prepare('SELECT archived FROM members WHERE chat_id=? AND user_id=?').bind(id, me.id).first();
+      return J({ chat, members, blocked_by_me, blocked_me: false, archived: !!(arch && arch.archived), now: t });
     }
 
     if (m === 'GET' && sub === 'messages') {
@@ -793,13 +1185,14 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
       const before = parseInt(url.searchParams.get('before') || '0');
       const since = parseInt(url.searchParams.get('since') || '0') || t;
       let q;
-      if (after) q = DB.prepare(MSG_SELECT + ' WHERE m.chat_id=? AND m.id>? ORDER BY m.id ASC LIMIT 200').bind(id, after);
-      else if (before) q = DB.prepare(MSG_SELECT + ' WHERE m.chat_id=? AND m.id<? ORDER BY m.id DESC LIMIT 50').bind(id, before);
-      else q = DB.prepare(MSG_SELECT + ' WHERE m.chat_id=? ORDER BY m.id DESC LIMIT 50').bind(id);
+      const vis = ' AND (m.hidden_for IS NULL OR m.hidden_for<>?)';
+      if (after) q = DB.prepare(MSG_SELECT + ' WHERE m.chat_id=? AND m.id>?' + vis + ' ORDER BY m.id ASC LIMIT 200').bind(id, after, me.id);
+      else if (before) q = DB.prepare(MSG_SELECT + ' WHERE m.chat_id=? AND m.id<?' + vis + ' ORDER BY m.id DESC LIMIT 50').bind(id, before, me.id);
+      else q = DB.prepare(MSG_SELECT + ' WHERE m.chat_id=?' + vis + ' ORDER BY m.id DESC LIMIT 50').bind(id, me.id);
       const stmts = [
         q,
         DB.prepare('SELECT user_id, last_read_id, MAX(delivered_id, last_read_id) AS delivered_id FROM members WHERE chat_id=? AND user_id<>?').bind(id, me.id),
-        DB.prepare('SELECT u.display_name FROM members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=? AND m.user_id<>? AND m.typing_until>?').bind(id, me.id, t),
+        DB.prepare('SELECT u.display_name FROM members m JOIN users u ON u.id=m.user_id WHERE m.chat_id=? AND m.user_id<>? AND m.typing_until>? AND m.user_id NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id=?)').bind(id, me.id, t, me.id),
         DB.prepare('SELECT message_id FROM deletions WHERE chat_id=? AND at>?').bind(id, since),
       ];
       if (otherId)
@@ -825,10 +1218,13 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
     }
 
     if (m === 'POST' && sub === 'messages' && !parts[3]) {
+      let hiddenFor = null;
       if (otherId) {
-        const bl = await DB.prepare('SELECT (SELECT deleted FROM users WHERE id=?2) AS gone, EXISTS(SELECT 1 FROM blocks WHERE (blocker_id=?1 AND blocked_id=?2) OR (blocker_id=?2 AND blocked_id=?1)) AS bl').bind(me.id, otherId).first();
-        if (bl.gone) return err('This account was deleted.');
-        if (bl.bl) return err("You can't send messages in this chat.");
+        const o = await DB.prepare('SELECT deleted FROM users WHERE id=?').bind(otherId).first();
+        if (!o || o.deleted) return err('This account was deleted.');
+        if (await hasBlocked(DB, me.id, otherId)) return err('You blocked this person. Unblock them to send messages.');
+        // If they blocked me, the message is kept on my side only. It is never delivered or shown to them.
+        if (await hasBlocked(DB, otherId, me.id)) hiddenFor = otherId;
       }
       const b = await body();
       let type = 'text', mediaKey = null;
@@ -853,16 +1249,21 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
         stmts.push(DB.prepare('INSERT INTO media (key,mime,data,created_at) VALUES (?,?,?,?)').bind(mediaKey, mime, data, t));
       } else if (!text) return err('Type a message first.');
       const replyTo = parseInt(b.reply_to) || 0;
-      stmts.push(DB.prepare('INSERT INTO messages (chat_id,sender_id,type,body,media_key,reply_to,created_at) VALUES (?,?,?,?,?,(SELECT id FROM messages WHERE id=? AND chat_id=?),?)')
-        .bind(id, me.id, type, text, mediaKey, replyTo, id, t));
-      stmts.push(DB.prepare('UPDATE chats SET last_msg_at=? WHERE id=?').bind(t, id));
+      stmts.push(DB.prepare('INSERT INTO messages (chat_id,sender_id,type,body,media_key,reply_to,created_at,hidden_for) VALUES (?,?,?,?,?,(SELECT id FROM messages WHERE id=? AND chat_id=?),?,?)')
+        .bind(id, me.id, type, text, mediaKey, replyTo, id, t, hiddenFor));
+      const msgIdx = stmts.length - 1;
+      if (!hiddenFor) {
+        stmts.push(DB.prepare('UPDATE chats SET last_msg_at=? WHERE id=?').bind(t, id));
+        // People who turned off "Keep chats archived" get this chat back in their main list
+        stmts.push(DB.prepare('UPDATE members SET archived=0 WHERE chat_id=? AND user_id<>? AND archived=1 AND user_id IN (SELECT id FROM users WHERE keep_archived=0)').bind(id, me.id));
+      }
       const res = await DB.batch(stmts);
-      const msgId = res[stmts.length - 2].meta.last_row_id;
+      const msgId = res[msgIdx].meta.last_row_id;
       const [msg] = await DB.batch([
         DB.prepare(MSG_SELECT + ' WHERE m.id=?').bind(msgId),
         DB.prepare('UPDATE members SET last_read_id=?, typing_until=0 WHERE chat_id=? AND user_id=?').bind(msgId, id, me.id),
       ]);
-      waitUntil(pushToChat(DB, id, me.id, url.origin));
+      if (!hiddenFor) waitUntil(pushToChat(DB, id, me.id, url.origin));
       return J({ message: msg.results[0] });
     }
 
@@ -884,6 +1285,12 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
       return J({ ok: true });
     }
 
+    if (m === 'POST' && sub === 'archive') {
+      const b = await body();
+      await DB.prepare('UPDATE members SET archived=? WHERE chat_id=? AND user_id=?').bind(b.archived ? 1 : 0, id, me.id).run();
+      return J({ ok: true, archived: !!b.archived });
+    }
+
     if (m === 'POST' && sub === 'typing') {
       await DB.prepare('UPDATE members SET typing_until=? WHERE chat_id=? AND user_id=?').bind(t + 5000, id, me.id).run();
       return J({ ok: true });
@@ -900,10 +1307,11 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
     if (m === 'POST' && sub === 'members') {
       if (!member.is_group) return err('You can only add people to groups.');
       const b = await body();
-      const u = b.user_id
-        ? await DB.prepare('SELECT id,display_name FROM users WHERE id=?').bind(parseInt(b.user_id)).first()
-        : await DB.prepare('SELECT id,display_name FROM users WHERE username=?').bind(cleanUsername(b.username)).first();
-      if (!u) return err('No one has that username.');
+      const tgt = await reachable(DB, me, b, t);
+      const u = tgt ? await DB.prepare('SELECT id,display_name FROM users WHERE id=? AND deleted=0').bind(tgt.id).first() : null;
+      if (!u || (await hasBlocked(DB, u.id, me.id))) return err("Couldn't add this person.");
+      if (tgt.viaTicket && !(await connectedTo(DB, me.id, u.id)) && (await rateCheck(DB, t, newChatRules(env, me, await ipKey(req), t))))
+        return err("You've added a lot of new people today. Please try again later.", 429);
       const r = await DB.prepare('INSERT OR IGNORE INTO members (chat_id,user_id,joined_at) VALUES (?,?,?)').bind(id, u.id, t).run();
       if (!r.meta.changes) return err('They are already in the group.');
       await DB.batch([
