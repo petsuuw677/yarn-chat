@@ -9,7 +9,11 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Yarn">
-<meta name="description" content="Private, end-to-end encrypted chats with just a username.">
+<meta name="description" content="Private chats with friends, groups, calls and vibes.">
+<meta property="og:title" content="Chat on Yarn">
+<meta property="og:description" content="Private chats with friends, groups, calls and vibes.">
+<meta property="og:type" content="website">
+<meta name="robots" content="noindex">
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -26,7 +30,7 @@
   <div class="auth-hero">
     <div class="brand light">yarn<span class="dot"></span></div>
     <h1>Talk to your people. Fast.</h1>
-    <p>End-to-end encrypted chats, groups and vibes with just a username. No phone number needed.</p>
+    <p>Chat with friends using a private Yarn ID. No phone number needed. Messages and media are end-to-end encrypted.</p>
     <div class="hero-chat" aria-hidden="true">
       <div class="hb in">Where you dey? 👀</div>
       <div class="hb out">On my way! 10 mins 🚗</div>
@@ -38,6 +42,7 @@
     <div class="auth-card">
       <h2 id="authTitle">Welcome back</h2>
       <p class="auth-sub" id="authSub">Log in to continue your chats.</p>
+      <p class="auth-link-note hidden" id="authLinkNote">🔗 Someone shared their Yarn profile with you. Log in or sign up to message them.</p>
       <div class="tabs" role="tablist">
         <button type="button" data-tab="login" class="on">Log in</button>
         <button type="button" data-tab="register">Sign up</button>
@@ -132,6 +137,7 @@
         </button>
       </header>
 
+      <div id="unknownBar" class="unknown-bar hidden"></div>
       <div id="msgs" class="msgs"></div>
 
       <div id="replyBar" class="reply-bar hidden">
@@ -179,6 +185,9 @@
       <div id="aiMsgs" class="msgs"></div>
       <form id="aiForm" class="composer">
         <div class="compose-box">
+          <button type="button" class="attach ai-img-btn ai-web-btn on" id="aiWebBtn" aria-label="Search the web" title="Search the web">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          </button>
           <button type="button" class="attach ai-img-btn" id="aiImgBtn" aria-label="Create an image" title="Create an image">
             <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.2 0 1.8-.8 1.8-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.7 1.7-1.7H16a5 5 0 0 0 5-5c0-4-4-7.2-9-7.2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="7.5" cy="11" r="1.3" fill="currentColor"/><circle cx="10" cy="7" r="1.3" fill="currentColor"/><circle cx="15" cy="7.5" r="1.3" fill="currentColor"/></svg>
           </button>
@@ -236,7 +245,7 @@
     <div class="call-av" id="callAv"></div>
     <h2 id="callName"></h2>
     <p id="callStatus">Calling…</p>
-    <p class="call-lock">🔒 End-to-end encrypted</p>
+    <p class="call-lock">🔒 Encrypted call</p>
   </div>
   <video id="localVid" autoplay playsinline muted class="hidden"></video>
   <div class="call-ctl" id="callCtl">

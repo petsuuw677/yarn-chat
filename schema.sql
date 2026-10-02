@@ -12,7 +12,11 @@ CREATE TABLE IF NOT EXISTS users (
   public_key TEXT,
   enc_priv TEXT,
   pw_v INTEGER NOT NULL DEFAULT 1,
-  deleted INTEGER NOT NULL DEFAULT 0
+  deleted INTEGER NOT NULL DEFAULT 0,
+  yarn_id TEXT,
+  link_token TEXT,
+  keep_archived INTEGER NOT NULL DEFAULT 1,
+  silence_unknown INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
@@ -37,6 +41,7 @@ CREATE TABLE IF NOT EXISTS members (
   joined_at INTEGER NOT NULL,
   typing_until INTEGER NOT NULL DEFAULT 0,
   delivered_id INTEGER NOT NULL DEFAULT 0,
+  archived INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (chat_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_members_user ON members(user_id);
@@ -48,6 +53,7 @@ CREATE TABLE IF NOT EXISTS messages (
   body TEXT,
   media_key TEXT,
   reply_to INTEGER,
+  hidden_for INTEGER,
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id);
@@ -71,8 +77,17 @@ CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS blobs (key TEXT PRIMARY KEY, owner_id INTEGER NOT NULL, size INTEGER NOT NULL, chunks INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_blobs_owner ON blobs(owner_id, created_at);
 CREATE TABLE IF NOT EXISTS blob_chunks (key TEXT NOT NULL, n INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (key, n));
-CREATE TABLE IF NOT EXISTS calls (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, caller_id INTEGER NOT NULL, callee_id INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, answered_at INTEGER, ended_at INTEGER);
+CREATE TABLE IF NOT EXISTS calls (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, caller_id INTEGER NOT NULL, callee_id INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, answered_at INTEGER, ended_at INTEGER, silent INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee_id, status, created_at);
 CREATE TABLE IF NOT EXISTS call_signals (id INTEGER PRIMARY KEY AUTOINCREMENT, call_id INTEGER NOT NULL, from_id INTEGER NOT NULL, type TEXT NOT NULL, data TEXT NOT NULL, created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_signals_call ON call_signals(call_id, id);
 CREATE TABLE IF NOT EXISTS ai_usage (user_id INTEGER NOT NULL, day TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, day));
+CREATE TABLE IF NOT EXISTS ai_cache (k TEXT PRIMARY KEY, data TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_yarn_id ON users(yarn_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_link ON users(link_token);
+CREATE INDEX IF NOT EXISTS idx_messages_media ON messages(media_key);
+CREATE INDEX IF NOT EXISTS idx_vibes_media ON vibes(media_key);
+CREATE INDEX IF NOT EXISTS idx_members_chat_user ON members(chat_id, user_id);
+CREATE TABLE IF NOT EXISTS rate_limits (k TEXT NOT NULL, win INTEGER NOT NULL, n INTEGER NOT NULL DEFAULT 0, exp INTEGER NOT NULL, PRIMARY KEY (k, win));
+CREATE TABLE IF NOT EXISTS reports (id INTEGER PRIMARY KEY AUTOINCREMENT, reporter_id INTEGER NOT NULL, target_id INTEGER NOT NULL, chat_id INTEGER, reason TEXT NOT NULL, details TEXT, content TEXT, created_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'open');
+CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL);

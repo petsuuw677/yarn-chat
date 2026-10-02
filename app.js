@@ -169,14 +169,19 @@ async function decryptMsg(m) {
 }
 const decryptAll = (list) => Promise.all(list.map(decryptMsg));
 const mediaURLs = new Map();
+const authFetch = (u) => fetch(u, { headers: S.token ? { authorization: 'Bearer ' + S.token } : {} });
 function mediaURL(key, ck) {
-  if (!ck) return Promise.resolve(media(key));
-  if (!mediaURLs.has(key)) mediaURLs.set(key, (async () => {
-    const res = await fetch(media(key));
-    if (!res.ok) throw new Error('missing');
-    const plain = await aesDecrypt(ck, new Uint8Array(await res.arrayBuffer()));
-    return URL.createObjectURL(new Blob([plain], { type: 'image/jpeg' }));
-  })());
+  if (!mediaURLs.has(key)) {
+    const p = (async () => {
+      const res = await authFetch(media(key));
+      if (!res.ok) throw new Error('missing');
+      if (!ck) return URL.createObjectURL(await res.blob()); // older photo sent before encryption
+      const plain = await aesDecrypt(ck, new Uint8Array(await res.arrayBuffer()));
+      return URL.createObjectURL(new Blob([plain], { type: 'image/jpeg' }));
+    })();
+    p.catch(() => mediaURLs.delete(key));
+    mediaURLs.set(key, p);
+  }
   return mediaURLs.get(key);
 }
 // Videos and voice notes: encrypted here, uploaded in ~1.9 MB pieces, re-joined and decrypted on the other phone
@@ -198,9 +203,9 @@ async function uploadBlob(bytes, onProgress) {
   return key;
 }
 async function downloadBlob(key) {
-  const info = await (await fetch(`/api/blob/${key}`)).json();
+  const info = await (await authFetch(`/api/blob/${key}`)).json();
   if (!info.chunks) throw new Error('missing');
-  const parts = await Promise.all(Array.from({ length: info.chunks }, (_, i) => fetch(`/api/blob/${key}/${i}`).then((r) => { if (!r.ok) throw new Error('missing'); return r.text(); })));
+  const parts = await Promise.all(Array.from({ length: info.chunks }, (_, i) => authFetch(`/api/blob/${key}/${i}`).then((r) => { if (!r.ok) throw new Error('missing'); return r.text(); })));
   return unb64(parts.join(''));
 }
 const blobURLs = new Map();
@@ -575,7 +580,7 @@ const FAB_ICONS = {
 function setTab(tab) {
   S.tab = tab;
   $$('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
-  $('#sideTitle').textContent = { chats: 'Chats', vibes: 'Vibes', padis: 'Padis' }[tab];
+  $('#sideTitle').textContent = { chats: S.showArchived ? 'Archived' : 'Chats', vibes: 'Vibes', padis: 'Padis' }[tab];
   $('#chatsView').classList.toggle('hidden', tab !== 'chats');
   $('#vibesView').classList.toggle('hidden', tab !== 'vibes');
   $('#padisView').classList.toggle('hidden', tab !== 'padis');
@@ -601,7 +606,7 @@ async function loadChats() {
     if (prev) {
       for (const c of d.chats) {
         const was = prev.get(c.id) || 0;
-        if (c.last_id && c.last_id > was && c.last_sender !== S.me.id && !['system', 'deleted'].includes(c.last_type)) {
+        if (c.last_id && c.last_id > was && c.last_sender !== S.me.id && !['system', 'deleted'].includes(c.last_type) && !c.archived) {
           if (!(c.id === S.chatId && !document.hidden)) notifyMsg(c);
         }
       }
@@ -623,23 +628,44 @@ async function decryptPreviews(list) {
 const chatTitle = (c) => (c.is_group ? c.name : c.other_nick || c.other_name || 'Unknown');
 function renderChats() {
   const q = $('#filter').value.trim().toLowerCase();
-  const f = S.filter;
+  const f = S.filter, arch = !!S.showArchived;
+  const archived = S.chats.filter((c) => c.archived);
+  if (arch && !archived.length) S.showArchived = false;
+  if (S.tab === 'chats') $('#sideTitle').textContent = S.showArchived ? 'Archived' : 'Chats';
+  $('#filter').placeholder = S.showArchived ? 'Search archived chats' : 'Search your chats';
   const list = S.chats.filter((c) =>
-    (!q || chatTitle(c).toLowerCase().includes(q) || (c.other_username || '').includes(q)) &&
+    (S.showArchived ? c.archived : (!c.archived || !!q)) &&
+    (!q || chatTitle(c).toLowerCase().includes(q)) &&
     (f === 'all' || (f === 'unread' && c.unread) || (f === 'groups' && c.is_group)));
   const ul = $('#chatList');
+  const archUnread = archived.filter((c) => c.unread).length;
+  const archRow = !S.showArchived && archived.length && !q
+    ? `<li class="chat-item arch-row" data-arch="1"><span class="avatar arch-av">🗄️</span><div class="ci-main"><div class="ci-top"><span class="ci-name">Archived</span></div>
+        <div class="ci-bot"><span class="ci-last">${archived.length} chat${archived.length === 1 ? '' : 's'}</span>${archUnread ? `<span class="badge muted-badge">${archUnread}</span>` : ''}</div></div></li>` : '';
+  const archHead = S.showArchived
+    ? `<li class="arch-head"><button id="archBack">‹ Back to chats</button><p>${S.me && S.me.keep_archived === false ? 'A new message moves a chat back to your main list.' : 'These chats stay archived when new messages arrive, and won’t notify you.'} Long-press or swipe a chat to unarchive.</p></li>` : '';
   const lastAIm = LS.get(aiKey(), []).slice(-1)[0] || {}, lastAI = lastAIm.content, lastAIimg = lastAIm.image || lastAIm.expired;
   const aiRow = f === 'all' && (!q || 'yarn ai assistant bot'.includes(q))
     ? `<li class="chat-item ai-item ${AI.open ? 'active' : ''}" data-ai="1"><span class="avatar ai-av">✨</span>
         <div class="ci-main"><div class="ci-top"><span class="ci-name">Yarn AI <span class="ai-badge">AI</span></span></div>
         <div class="ci-bot"><span class="ci-last">${esc(lastAI ? lastAI.replace(/[*#`_]/g, '').slice(0, 80) : lastAIimg ? '🎨 Image' : 'Ask me anything ✨')}</span></div></div></li>` : '';
-  if (!S.chats.length) {
-    ul.innerHTML = aiRow + `<li class="list-empty"><strong>No chats yet</strong>Find a friend by their exact username and say hi.<br><button class="btn" id="emptyNew">Start a chat</button></li>`;
+  if (S.showArchived) {
+    ul.innerHTML = archHead + (list.length ? list.map(chatRowHTML).join('') : `<li class="list-empty">${q ? 'No archived chats match your search.' : 'No archived chats.'}</li>`);
+    $('#archBack').onclick = () => { S.showArchived = false; renderChats(); };
+  } else if (!S.chats.length) {
+    ul.innerHTML = aiRow + `<li class="list-empty"><strong>No chats yet</strong>Start a chat with a friend's Yarn ID, or share yours from your profile.<br><button class="btn" id="emptyNew">Start a chat</button></li>`;
     $('#emptyNew').onclick = openNewChat;
   } else if (!list.length) {
-    ul.innerHTML = aiRow + `<li class="list-empty">${q ? 'No chats match your search.' : f === 'unread' ? 'You are all caught up. 🎉' : 'No group chats yet. Tap the people icon at the top to create one.'}</li>`;
+    ul.innerHTML = aiRow + archRow + `<li class="list-empty">${q ? 'No chats match your search.' : f === 'unread' ? 'You are all caught up. 🎉' : f === 'groups' ? 'No group chats yet. Tap the people icon at the top to create one.' : 'All your chats are archived. Open Archived above to see them.'}</li>`;
   } else {
-    ul.innerHTML = aiRow + list.map((c) => {
+    ul.innerHTML = aiRow + archRow + list.map(chatRowHTML).join('');
+  }
+  const total = S.chats.filter((c) => !c.archived).reduce((a, c) => a + (c.unread || 0), 0);
+  document.title = total ? `(${total}) ${APP_NAME}` : APP_NAME;
+  const b = $('#chatsBadge'); b.textContent = total > 99 ? '99+' : total; b.classList.toggle('hidden', !total);
+  try { if (navigator.setAppBadge) total ? navigator.setAppBadge(total) : navigator.clearAppBadge(); } catch {}
+}
+function chatRowHTML(c) {
       const name = chatTitle(c);
       let last = 'Say hi 👋';
       if (c.last_id) {
@@ -654,19 +680,77 @@ function renderChats() {
       const typing = c.typing ? (c.is_group ? 'someone is typing…' : 'typing…') : '';
       const online = !c.is_group && isOnline(c.other_seen) ? 'online' : '';
       return `<li class="chat-item ${c.unread ? 'unread' : ''} ${c.id === S.chatId ? 'active' : ''}" data-id="${c.id}">
-        ${c.is_group ? avatarHTML(c.name, 'g' + c.id) : avatarHTML(name, c.other_username, online, c.other_avatar)}
+        ${c.is_group ? avatarHTML(c.name, 'g' + c.id) : avatarHTML(name, 'u' + c.other_id, online, c.other_avatar)}
         <div class="ci-main">
-          <div class="ci-top"><span class="ci-name">${esc(name)}</span><span class="ci-time">${listTime(c.last_msg_at)}</span></div>
+          <div class="ci-top"><span class="ci-name">${esc(name)}${c.archived && !S.showArchived ? ' <span class="tag">Archived</span>' : ''}</span><span class="ci-time">${listTime(c.last_msg_at)}</span></div>
           <div class="ci-bot"><span class="ci-last ${typing ? 'typing-txt' : ''}">${typing ? '' : c._tick || ''}${esc(typing || last)}</span>${c.unread ? `<span class="badge">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}</div>
-        </div></li>`;
-    }).join('');
-  }
-  const total = S.chats.reduce((a, c) => a + (c.unread || 0), 0);
-  document.title = total ? `(${total}) ${APP_NAME}` : APP_NAME;
-  const b = $('#chatsBadge'); b.textContent = total > 99 ? '99+' : total; b.classList.toggle('hidden', !total);
-  try { if (navigator.setAppBadge) total ? navigator.setAppBadge(total) : navigator.clearAppBadge(); } catch {}
+        </div><span class="swipe-hint">🗄️ ${c.archived ? 'Unarchive' : 'Archive'}</span></li>`;
 }
-$('#chatList').addEventListener('click', (e) => { const li = e.target.closest('.chat-item'); if (!li) return; if (li.dataset.ai) openAI(); else openChat(+li.dataset.id); });
+async function setArchived(id, val) {
+  const c = S.chats.find((x) => x.id === id);
+  try {
+    await api(`chats/${id}/archive`, { body: { archived: val } });
+    if (c) c.archived = val;
+    if (id === S.chatId) S.chatArchived = val;
+    S.chatsKey = ''; renderChats();
+    toastAction(val ? 'Chat archived' : 'Chat unarchived', 'Undo', () => setArchived(id, !val));
+  } catch (e) { toast(e.message); }
+}
+function chatMenu(id) {
+  const c = S.chats.find((x) => x.id === id); if (!c) return;
+  showModal(`<h2>${esc(chatTitle(c))}</h2><div class="menu">
+      <button data-a="open">💬 Open chat</button>
+      <button data-a="arch">🗄️ ${c.archived ? 'Unarchive chat' : 'Archive chat'}</button>
+      ${!c.is_group && c.other_id ? '<button data-a="prof">👤 View profile</button>' : ''}
+    </div><p class="muted small pad">Archiving hides the chat from your main list. It doesn't delete messages, block anyone, or tell the other person.</p>`);
+  $('#sheet .menu').onclick = (e) => {
+    const a = e.target.closest('button')?.dataset.a; if (!a) return;
+    hideModal();
+    if (a === 'open') openChat(id);
+    if (a === 'arch') setArchived(id, !c.archived);
+    if (a === 'prof') openProfile(c.other_id);
+  };
+}
+function toastAction(msg, label, fn) {
+  const t = $('#toast');
+  t.innerHTML = `${esc(msg)} <button class="toast-btn">${esc(label)}</button>`;
+  t.classList.add('show', 'actionable');
+  $('.toast-btn', t).onclick = () => { t.classList.remove('show', 'actionable'); fn(); };
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('show', 'actionable'), 4500);
+}
+let swipeBlockClick = false;
+$('#chatList').addEventListener('click', (e) => {
+  if (swipeBlockClick) { swipeBlockClick = false; return; }
+  const li = e.target.closest('.chat-item'); if (!li) return;
+  if (li.dataset.ai) openAI();
+  else if (li.dataset.arch) { S.showArchived = true; $('#filter').value = ''; renderChats(); }
+  else openChat(+li.dataset.id);
+});
+// long-press (phone) or right-click (computer) → chat options
+let listPressT = null;
+$('#chatList').addEventListener('contextmenu', (e) => { const li = e.target.closest('.chat-item[data-id]'); if (!li) return; e.preventDefault(); chatMenu(+li.dataset.id); });
+// swipe left to archive / unarchive (touch screens)
+let sw = null;
+$('#chatList').addEventListener('pointerdown', (e) => {
+  const li = e.target.closest('.chat-item[data-id]'); if (!li || e.pointerType !== 'touch') return;
+  sw = { li, x: e.clientX, y: e.clientY, dx: 0, on: false };
+  clearTimeout(listPressT); listPressT = setTimeout(() => { if (sw && !sw.on) { const id = +li.dataset.id; sw = null; swipeBlockClick = true; if (navigator.vibrate) try { navigator.vibrate(20); } catch {} chatMenu(id); } }, 550);
+});
+$('#chatList').addEventListener('pointermove', (e) => {
+  if (!sw) return;
+  const dx = e.clientX - sw.x, dy = e.clientY - sw.y;
+  if (!sw.on && Math.abs(dy) > 10) { clearTimeout(listPressT); sw = null; return; }
+  if (!sw.on && dx < -12 && Math.abs(dx) > Math.abs(dy)) { sw.on = true; clearTimeout(listPressT); sw.li.classList.add('swiping'); }
+  if (sw.on) { sw.dx = Math.min(0, Math.max(-140, dx)); sw.li.style.transform = `translateX(${sw.dx}px)`; sw.li.classList.toggle('swipe-go', sw.dx < -80); }
+});
+const swipeEnd = () => {
+  clearTimeout(listPressT);
+  if (!sw) return;
+  const { li, dx, on } = sw; sw = null;
+  li.style.transform = ''; li.classList.remove('swiping', 'swipe-go');
+  if (on) { swipeBlockClick = true; setTimeout(() => (swipeBlockClick = false), 350); if (dx < -80) { const c = S.chats.find((x) => x.id === +li.dataset.id); if (c) setArchived(c.id, !c.archived); } }
+};
+['pointerup', 'pointercancel'].forEach((ev) => $('#chatList').addEventListener(ev, swipeEnd));
 $('#filter').addEventListener('input', renderChats);
 $('#filters').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
@@ -702,7 +786,7 @@ async function loadChatDetails() {
     const d = await api('chats/' + id);
     if (S.chatId !== id) return;
     S.chat = d.chat; S.members = d.members; S.serverNow = d.now;
-    S.blockedByMe = d.blocked_by_me; S.blockedMe = d.blocked_me;
+    S.blockedByMe = d.blocked_by_me; S.blockedMe = false; S.chatArchived = !!d.archived;
     updateHeader(); updateComposer();
   } catch (e) { toast(e.message); }
 }
@@ -738,11 +822,31 @@ function updateHeader() {
     setHeader(nameOf(o), o.username, sub, isOnline(seen), o.avatar_key);
   }
 }
+const dismissedBars = new Set();
+function updateUnknownBar() {
+  const bar = $('#unknownBar'); if (!bar) return;
+  const o = S.chat && !S.chat.is_group ? other() : null;
+  const show = o && o.id && !o.deleted && !S.blockedByMe && !S.padis.some((p) => p.id === o.id) && !dismissedBars.has(S.chatId);
+  bar.classList.toggle('hidden', !show);
+  if (!show) return;
+  bar.innerHTML = `<p><b>${esc(nameOf(o))}</b> isn't in your padis. Only share personal details with people you trust.</p>
+    <div class="ub-acts"><button data-ub="padi">🤝 Add to padis</button><button data-ub="block">⛔ Block</button><button data-ub="report">🚩 Report</button><button data-ub="x" aria-label="Dismiss">✕</button></div>`;
+  bar.onclick = async (e) => {
+    const a = e.target.closest('[data-ub]')?.dataset.ub; if (!a) return;
+    if (a === 'x') { dismissedBars.add(S.chatId); return updateUnknownBar(); }
+    if (a === 'padi') { await addPadi(o); await loadPadis(); return updateUnknownBar(); }
+    if (a === 'report') return reportSheet(o, S.chatId);
+    if (a === 'block') {
+      if (!confirm(`Block ${nameOf(o)}? Their messages and calls won't reach you. They are not told.`)) return;
+      try { await api('blocks', { body: { user_id: o.id } }); S.blockedByMe = true; updateComposer(); toast('Blocked'); } catch (x) { toast(x.message); }
+    }
+  };
+}
 function updateComposer() {
+  updateUnknownBar();
   const bar = $('#blockedBar');
   let html = '';
   if (S.blockedByMe) html = `You blocked ${esc(nameOf(other()))}. <button id="unblockHere">Unblock</button>`;
-  else if (S.blockedMe) html = `You can't reply to this conversation.`;
   bar.innerHTML = html;
   bar.classList.toggle('hidden', !html);
   $('#composer').classList.toggle('hidden', !!html);
@@ -794,7 +898,7 @@ function msgHTML(m, prev, extra = '') {
   if (m.type === 'image' && !m.locked) {
     if (m.media_url) img = `<span class="img" data-src="${m.media_url}"><img src="${m.media_url}" alt="Photo"></span>`;
     else if (m.media_key && m.ck) img = `<span class="img loading" data-mk="${m.media_key}" data-mid="${m.id}"></span>`;
-    else if (m.media_key) img = `<span class="img" data-src="${media(m.media_key)}"><img src="${media(m.media_key)}" loading="lazy" alt="Photo"></span>`;
+    else if (m.media_key) img = `<span class="img loading" data-mk="${m.media_key}" data-mid="${m.id}"></span>`;
   } else if (m.type === 'video' && !m.locked) {
     img = m.local_url
       ? `<span class="vid"><video src="${m.local_url}" controls playsinline preload="metadata"></video></span>`
@@ -812,7 +916,7 @@ function msgHTML(m, prev, extra = '') {
 let lastRendered = null;
 function renderAll(list) {
   S.ids = new Set(); lastRendered = null;
-  let html = S.noOlder ? '<div class="e2e-note">🔒 Messages and photos are end-to-end encrypted. Only people in this chat can read them, not even Yarn.</div>' : '<button class="older" id="olderBtn">Load earlier messages</button>';
+  let html = S.noOlder ? '<button class="e2e-note" id="e2eNote">🔒 New messages, photos, videos and voice notes in this chat are end-to-end encrypted. Tap to learn more.</button>' : '<button class="older" id="olderBtn">Load earlier messages</button>';
   let day = '';
   for (const m of list) {
     const d = dayLabel(m.created_at);
@@ -825,13 +929,14 @@ function renderAll(list) {
   S.firstId = list.length ? list[0].id : 0;
   S.lastId = list.length ? list[list.length - 1].id : S.lastId;
   const ob = $('#olderBtn'); if (ob) ob.onclick = loadOlder;
+  const en = $('#e2eNote'); if (en) en.onclick = encryptionInfo;
   hydrateImages(); updateSeenLabel();
 }
 function hydrateImages() {
   $$('#msgs .img[data-mk]:not([data-src])').forEach(async (el) => {
     if (el.dataset.busy) return; el.dataset.busy = '1';
     const m = S.loaded.find((x) => x.id === +el.dataset.mid);
-    if (!m || !m.ck) return;
+    if (!m || !m.media_key) return;
     try { const url = await mediaURL(m.media_key, m.ck); el.dataset.src = url; el.classList.remove('loading'); el.innerHTML = `<img src="${url}" alt="Photo">`; }
     catch { el.classList.remove('loading'); el.classList.add('gone'); el.textContent = 'Photo unavailable'; }
   });
@@ -1301,7 +1406,7 @@ $('#camBtn').onclick = () => openCamera('chat');
 async function msgMediaURL(m) {
   if (m.local_url) return m.local_url;
   if (m.media_url) return m.media_url;
-  if (m.type === 'image') return m.ck ? mediaURL(m.media_key, m.ck) : media(m.media_key);
+  if (m.type === 'image') return mediaURL(m.media_key, m.ck || null);
   return blobURL(m.media_key, m.ck, (m.meta || {}).mime);
 }
 async function msgBytes(m) { return new Uint8Array(await (await fetch(await msgMediaURL(m))).arrayBuffer()); }
@@ -1373,7 +1478,7 @@ function aiSave() {
   list.forEach((m) => { delete m.pendingImg; });
   LS.set(aiKey(), list);
 }
-function md(src) {
+function md(src, sources) {
   let s = esc(src || '');
   const blocks = [];
   s = s.replace(/```[\w-]*\n?([\s\S]*?)(```|$)/g, (_, c) => { blocks.push(`<pre><code>${c.replace(/\n$/, '')}</code></pre>`); return `\u0000${blocks.length - 1}\u0000`; });
@@ -1383,15 +1488,19 @@ function md(src) {
   s = s.replace(/(^|\n)((?:[-*•] .*(?:\n|$))+)/g, (_, pre, b) => pre + '<ul>' + b.trim().split('\n').map((l) => '<li>' + l.replace(/^[-*•] /, '') + '</li>').join('') + '</ul>');
   s = s.replace(/(^|\n)((?:\d+[.)] .*(?:\n|$))+)/g, (_, pre, b) => pre + '<ol>' + b.trim().split('\n').map((l) => '<li>' + l.replace(/^\d+[.)] /, '') + '</li>').join('') + '</ol>');
   s = s.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  if (sources && sources.length) s = s.replace(/\[(\d{1,2})\]/g, (all, n) => { const x = sources[+n - 1]; return x && /^https?:\/\//.test(x.url) ? `<a class="ai-cite" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${n}</a>` : all; });
   s = s.replace(/\n/g, '<br>').replace(/<br>(<\/?(?:ul|ol|li|h4))/g, '$1').replace(/(<\/(?:ul|ol|h4)>)<br>/g, '$1');
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[i]);
 }
 const AI_SUGGEST = [
-  ['🎨', 'Draw a cute cat wearing a colourful agbada'],
-  ['💌', 'Write a sweet birthday message for my padi'],
-  ['🗣️', 'Translate "I go soon come" into proper English'],
+  ['🎨', 'Draw a cute cat wearing a colourful agbada', 'img'],
+  ['📰', "What's the latest news in Nigeria today?", 'web'],
   ['💡', 'Give me 5 small business ideas I can start with ₦50k'],
+  ['🗣️', 'Translate "I go soon come" into proper English'],
 ];
+const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return 'source'; } };
+const modelLabel = (m) => (/gpt-oss-120b/i.test(m) ? 'GPT-OSS 120B' : /gpt-oss-20b/i.test(m) ? 'GPT-OSS 20B' : /llama-?3\.3-70b/i.test(m) ? 'Llama 3.3 70B' : /llama-?3\.1-8b/i.test(m) ? 'Llama 3.1 8B' : /llama-?3\.2-3b/i.test(m) ? 'Llama 3.2 3B' : String(m || '').split('/').pop());
+AI.web = LS.get('yarn_ai_web', true);
 function aiBubble(m, i) {
   if (m.role === 'assistant' && (m.image || m.pendingImg || m.expired)) {
     const inner = m.pendingImg ? '<span class="ai-img-wait"><span>🎨</span>Creating your image…</span>'
@@ -1401,8 +1510,11 @@ function aiBubble(m, i) {
       ${m.image ? `<div class="ai-acts"><button data-imgshare="${i}">⬇️ Save / Share</button><button data-imgsend="${i}">💬 Send to chat</button><button data-again="${i}">🔁 Try again</button></div>` : ''}</div>`;
   }
   if (m.role === 'user') return `<div class="m mine first ai-q" data-ai="${i}"><div class="txt">${linkify(m.content)}</div></div>`;
-  const body = m.content ? md(m.content) : '<span class="ai-dots"><i></i><i></i><i></i></span>';
-  return `<div class="m first ai-a ${m.error ? 'ai-err' : ''}" data-ai="${i}"><div class="who ai-who">✨ Yarn AI</div><div class="txt md">${body}</div>
+  const body = m.content ? md(m.content, m.sources) : m.searching ? '<span class="ai-searching">🌐 Searching the web<span class="ai-dots"><i></i><i></i><i></i></span></span>' : '<span class="ai-dots"><i></i><i></i><i></i></span>';
+  const srcs = m.sources && m.sources.length ? `<div class="ai-srcs">${m.sources.map((x, k) => `<a class="ai-src" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer" title="${esc(x.title)}"><b>${k + 1}</b>${esc(hostOf(x.url))}</a>`).join('')}</div>` : '';
+  const notice = m.notice ? `<div class="ai-notice">ℹ️ ${esc(m.notice)}</div>` : '';
+  const foot = m.model && m.content && !m.error ? `<div class="ai-model">${m.sources && m.sources.length ? '🌐 Searched the web · ' : ''}${esc(modelLabel(m.model))}</div>` : '';
+  return `<div class="m first ai-a ${m.error ? 'ai-err' : ''}" data-ai="${i}"><div class="who ai-who">✨ Yarn AI</div><div class="txt md">${body}</div>${srcs}${notice}${foot}
     ${m.content && !m.error ? `<div class="ai-acts"><button data-copy="${i}">📋 Copy</button></div>` : ''}</div>`;
 }
 function aiRender() {
@@ -1410,8 +1522,8 @@ function aiRender() {
   if (!AI.list.length) {
     box.innerHTML = `<div class="ai-empty"><div class="ai-orb">✨</div><h2>Hi ${esc((S.me.display_name || '').split(' ')[0])}, I'm Yarn AI</h2>
       <p>Ask me anything: writing, ideas, translations, explanations. You can talk to me in Pidgin too.</p>
-      <div class="ai-chips">${AI_SUGGEST.map(([e, t]) => `<button data-q="${esc(t)}"><span>${e}</span>${esc(t)}</button>`).join('')}</div>
-      <p class="ai-note">🔒 Your AI chats stay on this device. Yarn AI can't see your other chats.</p></div>`;
+      <div class="ai-chips">${AI_SUGGEST.filter(([, , k]) => !(k === 'img' && AI.usage && AI.usage.images === false) && !(k === 'web' && AI.usage && AI.usage.web === false)).map(([e, t]) => `<button data-q="${esc(t)}"><span>${e}</span>${esc(t)}</button>`).join('')}</div>
+      <p class="ai-note">🔒 Your AI chats are saved only on this device, and Yarn AI can't see your other chats. Your questions are sent to AI${AI.usage && AI.usage.web ? ' and web-search' : ''} services to get an answer, so they are <b>not</b> end-to-end encrypted like your chats with people.</p></div>`;
   } else box.innerHTML = AI.list.map(aiBubble).join('');
   box.scrollTop = box.scrollHeight;
 }
@@ -1419,12 +1531,16 @@ function aiUsageText() {
   const u = AI.usage; if (!u) return 'Ask me anything';
   if (!u.enabled) return 'Not switched on yet';
   const left = Math.max(0, u.limit - u.used);
-  const il = Math.max(0, (u.img_limit || 0) - (u.img_used || 0));
-  return `${left} chats · ${il} images left today`;
+  const il = u.images === false ? null : Math.max(0, (u.img_limit || 0) - (u.img_used || 0));
+  return `${left} chats${il === null ? '' : ` · ${il} images`} left today`;
 }
 async function aiRefreshUsage() {
+  const first = !AI.usage;
   try { AI.usage = await api('ai/usage'); } catch {}
+  const u = AI.usage;
+  if (u) { $('#aiWebBtn').classList.toggle('hidden', u.web === false); $('#aiImgBtn').classList.toggle('hidden', u.images === false); if (u.images === false) setImgMode(false); }
   $('#aiSub').textContent = AI.busy ? 'typing…' : aiUsageText();
+  if (first && AI.open && !AI.list.length) aiRender();
 }
 function openAI(push = true) {
   if (S.chatId) closeChat(false);
@@ -1455,6 +1571,9 @@ function setImgMode(on) {
   if (on && !touch) $('#aiText').focus();
 }
 $('#aiImgBtn').onclick = () => setImgMode(!AI.imgMode);
+function paintWebBtn() { $('#aiWebBtn').classList.toggle('on', !!AI.web); }
+$('#aiWebBtn').onclick = () => { AI.web = !AI.web; LS.set('yarn_ai_web', AI.web); paintWebBtn(); toast(AI.web ? '🌐 Web search on. Answers use live results.' : 'Web search off. Answers use my own knowledge.'); };
+paintWebBtn();
 async function aiImage(prompt) {
   prompt = prompt.trim(); if (!prompt || AI.busy) return;
   AI.list.push({ role: 'user', content: '🎨 ' + prompt, t: Date.now() });
@@ -1487,7 +1606,7 @@ async function aiImage(prompt) {
 }
 async function aiAsk(text) {
   text = text.trim(); if (!text || AI.busy) return;
-  if (AI.imgMode || IMG_RX.test(text)) return aiImage(text);
+  if (AI.imgMode || (IMG_RX.test(text) && !(AI.usage && AI.usage.images === false))) return aiImage(text);
   AI.list.push({ role: 'user', content: text, t: Date.now() });
   const ans = { role: 'assistant', content: '', t: Date.now() };
   AI.list.push(ans); aiRender();
@@ -1504,11 +1623,11 @@ async function aiAsk(text) {
     const res = await fetch('/api/ai/chat', {
       method: 'POST', signal: AI.ctrl.signal,
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + S.token },
-      body: JSON.stringify({ messages: AI.list.slice(-13, -1).map(({ role, content }) => ({ role, content })) }),
+      body: JSON.stringify({ web: !!AI.web, messages: AI.list.slice(-17, -1).map(({ role, content }) => ({ role, content })) }),
     });
     if (!res.ok) { let e = {}; try { e = await res.json(); } catch {} throw new Error(e.error || 'Yarn AI could not answer. Check your connection.'); }
     const reader = res.body.getReader(), dec = new TextDecoder();
-    let buf = '', last = 0;
+    let buf = '', last = 0, streamErr = null;
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -1519,12 +1638,24 @@ async function aiAsk(text) {
         if (!line.startsWith('data:')) continue;
         const data = line.slice(5).trim();
         if (!data || data === '[DONE]') continue;
-        try { const j = JSON.parse(data); const piece = j.response ?? j.choices?.[0]?.delta?.content ?? ''; if (piece) ans.content += piece; } catch {}
+        try {
+          const j = JSON.parse(data);
+          if (j.status === 'searching') ans.searching = true;
+          if (Array.isArray(j.sources)) ans.sources = j.sources.filter((x) => x && /^https?:\/\//.test(x.url)).map((x) => ({ title: String(x.title || ''), url: x.url }));
+          if (j.notice) ans.notice = String(j.notice);
+          if (j.model) ans.model = String(j.model);
+          if (j.error) streamErr = String(j.error);
+          const piece = j.response ?? j.choices?.[0]?.delta?.content ?? '';
+          if (piece) { ans.searching = false; ans.content += piece; }
+        } catch {}
       }
       if (Date.now() - last > 60) { paint(); last = Date.now(); }
     }
+    ans.searching = false;
+    if (streamErr && !ans.content.trim()) throw new Error(streamErr);
     if (!ans.content.trim()) throw new Error('Yarn AI had nothing to say. Try asking another way.');
   } catch (e) {
+    ans.searching = false;
     if (e.name === 'AbortError') { if (!ans.content) ans.content = '_(stopped)_'; }
     else { ans.content = '⚠️ ' + e.message; ans.error = true; }
   }
@@ -1656,7 +1787,7 @@ async function startCall(kind) {
   if (CALL.status !== 'idle') return toast('You are already on a call.');
   if (!S.chat) return;
   if (S.chat.is_group) return toast('Calls work in 1-to-1 chats for now.');
-  if (S.blockedByMe || S.blockedMe) return toast("You can't call this person.");
+  if (S.blockedByMe) return toast('You blocked this person. Unblock them to call.');
   if (!window.RTCPeerConnection || !navigator.mediaDevices?.getUserMedia) return toast('Calls are not supported in this browser.');
   resetCall();
   Object.assign(CALL, { kind, role: 'caller', chatId: S.chatId, peer: other(), status: 'calling' });
@@ -1871,37 +2002,50 @@ document.addEventListener('keydown', (e) => {
 // tap any profile photo in a sheet to view it big
 $('#sheet').addEventListener('click', (e) => { const a = e.target.closest('.big-av .avatar[data-photo]'); if (a) showPhoto(a.dataset.photo); });
 
-/* ================= find people (exact username only) ================= */
+/* ================= find people by exact Yarn ID ================= */
+// A Yarn ID is a 12-digit contact address (not a phone number, not a password). Only exact IDs work: no search, no suggestions.
+const idDigits = (v) => String(v || '').replace(/\D/g, '').slice(0, 12);
+const fmtId = (v) => idDigits(v).replace(/(\d{4})(?=\d)/g, '$1 ');
 function userRow(u, right = '') {
-  return `<div class="urow" data-uid="${u.id}">${avatarHTML(nameOf(u), u.username, 'sm', u.avatar_key)}
-    <div class="ur-main"><strong>${esc(nameOf(u))}</strong><span>@${esc(u.username)}${u.about ? ' · ' + esc(u.about) : ''}</span></div>${right}</div>`;
+  const sub = u.about ? esc(u.about) : u.yarn_id ? 'Yarn ID ' + fmtId(u.yarn_id) : '';
+  return `<div class="urow" data-uid="${u.id}">${avatarHTML(nameOf(u), 'u' + u.id, 'sm', u.avatar_key)}
+    <div class="ur-main"><strong>${esc(nameOf(u))}</strong>${sub ? `<span>${sub}</span>` : ''}</div>${right}</div>`;
 }
-function finder(host, actionsFor, placeholder = 'Type their full username') {
-  host.innerHTML = `<form class="finder"><span class="at">@</span><input class="finder-in" placeholder="${placeholder}" autocapitalize="none" autocomplete="off" spellcheck="false"><button class="finder-go">Find</button></form><div class="finder-res"></div>`;
+function lookupCard(u, acts, idText) {
+  return `<div class="ucard"><div class="urow">${avatarHTML(u.display_name, 'u' + u.id, 'sm', u.avatar_key)}
+    <div class="ur-main"><strong>${esc(u.display_name)}</strong>${idText ? `<span>${idText}</span>` : ''}</div></div>
+    <div class="uc-acts">${acts.map((a, i) => `<button class="btn sm ${a.cls || ''}" data-i="${i}" ${a.disabled ? 'disabled' : ''}>${a.label}</button>`).join('')}</div></div>`;
+}
+function finder(host, actionsFor) {
+  host.innerHTML = `<form class="finder"><span class="at">#</span><input class="finder-in id-in" inputmode="numeric" placeholder="0000 0000 0000" autocomplete="off" maxlength="16" aria-label="Yarn ID"><button class="finder-go">Find</button></form><div class="finder-res"></div>`;
   const inp = $('.finder-in', host), res = $('.finder-res', host);
+  inp.addEventListener('input', () => { inp.value = fmtId(inp.value); });
+  inp.addEventListener('paste', () => setTimeout(() => (inp.value = fmtId(inp.value)), 0));
   $('.finder', host).addEventListener('submit', async (e) => {
     e.preventDefault();
-    const u = inp.value.trim().replace(/^@/, '').toLowerCase();
-    if (!u) return;
+    const id = idDigits(inp.value);
+    if (!id) return;
+    if (id.length !== 12) { res.innerHTML = `<p class="muted pad">A Yarn ID has 12 digits. You've typed ${id.length}.</p>`; return; }
     res.innerHTML = '<p class="muted pad">Looking…</p>';
     try {
-      const d = await api('users/find?u=' + encodeURIComponent(u));
+      const d = await api('users/lookup?id=' + id);
       const acts = actionsFor(d.user);
-      res.innerHTML = `<div class="ucard">${userRow(d.user)}<div class="uc-acts">${acts.map((a, i) => `<button class="btn sm ${a.cls || ''}" data-i="${i}" ${a.disabled ? 'disabled' : ''}>${a.label}</button>`).join('')}</div></div>`;
+      res.innerHTML = lookupCard(d.user, acts, 'Yarn ID ' + fmtId(id));
       $$('.uc-acts button', res).forEach((b) => (b.onclick = () => acts[+b.dataset.i].fn(d.user, b)));
-      $('.urow', res).onclick = () => openProfile(d.user.id);
     } catch (x) { res.innerHTML = `<p class="muted pad">${esc(x.message)}</p>`; }
   });
   setTimeout(() => { if (!touch) inp.focus(); }, 50);
   return { input: inp, res };
 }
+// ticket = proof of a lookup by ID or link; user_id works only for people you're already connected with
+const reach = (u) => (u.ticket ? { ticket: u.ticket } : { user_id: u.id });
 async function openDirect(user) {
-  try { const d = await api('chats/direct', { body: { user_id: user.id } }); hideModal(); await loadChats(); setTab('chats'); openChat(d.id); }
+  try { const d = await api('chats/direct', { body: reach(user) }); hideModal(); await loadChats(); setTab('chats'); openChat(d.id); }
   catch (e) { toast(e.message); }
 }
 async function addPadi(user, btn) {
   try {
-    await api('padis', { body: { user_id: user.id } });
+    await api('padis', { body: reach(user) });
     if (btn) { btn.textContent = 'Added ✓'; btn.disabled = true; }
     toast(`${nameOf(user)} is now your padi 🤝`);
     loadPadis(); loadVibes();
@@ -1909,7 +2053,7 @@ async function addPadi(user, btn) {
 }
 
 function openNewChat() {
-  showModal(`<h2>New chat</h2><p class="muted">Type the person's full username to find them.</p><div id="nf"></div>
+  showModal(`<h2>New chat</h2><p class="muted">Enter your friend's 12-digit Yarn ID, or open the profile link they shared. You can message them straight away.</p><div id="nf"></div>
     ${S.padis.length ? `<p class="sec">Your padis</p><div class="ulist" id="npl">${S.padis.map((u) => userRow(u)).join('')}</div>` : ''}
     <div class="row"><button class="btn ghost" data-close>Close</button></div>`);
   finder($('#nf'), (u) => [
@@ -1924,7 +2068,7 @@ $('#newGroupBtn').onclick = () => {
   showModal(`<h2>New group</h2>
     <input class="field" id="gn" placeholder="Group name" maxlength="50">
     <div class="chips" id="gc"></div>
-    <p class="sec">Add people</p><div id="gf"></div>
+    <p class="sec">Add people by Yarn ID</p><div id="gf"></div>
     ${S.padis.length ? `<p class="sec">From your padis</p><div class="ulist" id="gpl">${S.padis.map((u) => userRow(u, '<span class="pick">+</span>')).join('')}</div>` : ''}
     <div class="row"><button class="btn ghost" data-close>Cancel</button><button class="btn" id="gcreate">Create group</button></div>`);
   const draw = () => {
@@ -1932,7 +2076,7 @@ $('#newGroupBtn').onclick = () => {
     $$('#gpl .urow').forEach((r) => r.classList.toggle('picked', picked.has(+r.dataset.uid)));
   };
   $('#gc').onclick = (e) => { const b = e.target.closest('[data-rm]'); if (b) { picked.delete(+b.dataset.rm); draw(); } };
-  const f = finder($('#gf'), (u) => [{ label: 'Add', fn: (usr) => { picked.set(usr.id, usr); draw(); f.input.value = ''; f.res.innerHTML = ''; } }]);
+  const f = finder($('#gf'), () => [{ label: 'Add to group', fn: (usr) => { picked.set(usr.id, usr); draw(); f.input.value = ''; f.res.innerHTML = ''; } }]);
   const gpl = $('#gpl');
   if (gpl) gpl.onclick = (e) => {
     const r = e.target.closest('.urow'); if (!r) return;
@@ -1942,7 +2086,8 @@ $('#newGroupBtn').onclick = () => {
   $('#gcreate').onclick = async () => {
     const name = $('#gn').value.trim();
     if (!name) return toast('Give the group a name.');
-    try { const d = await api('chats/group', { body: { name, user_ids: [...picked.keys()] } }); hideModal(); await loadChats(); setTab('chats'); openChat(d.id); }
+    const all = [...picked.values()];
+    try { const d = await api('chats/group', { body: { name, user_ids: all.filter((u) => !u.ticket).map((u) => u.id), tickets: all.filter((u) => u.ticket).map((u) => u.ticket) } }); hideModal(); await loadChats(); setTab('chats'); openChat(d.id); }
     catch (e) { toast(e.message); }
   };
 };
@@ -1954,9 +2099,10 @@ async function openProfile(uid) {
   let u;
   try { u = (await api('users/' + uid)).user; } catch (e) { return showModal(`<p class="muted pad">${esc(e.message)}</p><div class="row"><button class="btn ghost" data-close>Close</button></div>`); }
   const seen = seenText(u.last_seen);
-  showModal(`<div class="profile-top big-av">${avatarHTML(nameOf(u), u.username, '', u.avatar_key)}
+  const dmHere = S.chat && !S.chat.is_group && other().id === uid;
+  showModal(`<div class="profile-top big-av">${avatarHTML(nameOf(u), 'u' + u.id, '', u.avatar_key)}
       <h2>${esc(nameOf(u))}</h2>
-      <p class="muted">@${esc(u.username)}${u.nickname ? ' · ' + esc(u.display_name) : ''}${seen ? ' · ' + seen : ''}</p>
+      <p class="muted">${u.yarn_id ? 'Yarn ID ' + fmtId(u.yarn_id) : ''}${u.nickname ? ' · ' + esc(u.display_name) : ''}${seen ? ' · ' + seen : ''}</p>
       ${u.about ? `<p class="about">${esc(u.about)}</p>` : ''}
       ${u.deleted ? '<p class="pill">This account was deleted.</p>' : ''}
       ${u.is_padi ? `<p class="pill ${u.mutual ? 'ok' : ''}">${u.mutual ? '🤝 You are padis. You can see each other’s vibes.' : '⏳ Saved. You’ll see their vibes once they add you back.'}</p>` : ''}
@@ -1965,7 +2111,9 @@ async function openProfile(uid) {
       <button data-a="msg">💬 Message</button>
       ${u.is_padi ? '<button data-a="nick">✏️ Set a nickname</button><button data-a="unpadi">➖ Remove from padis</button>' : '<button data-a="padi">🤝 Add to padis</button>'}
       ${u.public_key && KEYS ? '<button data-a="code">🔐 Verify encryption</button>' : ''}
+      ${dmHere ? `<button data-a="arch">🗄️ ${S.chatArchived ? 'Unarchive chat' : 'Archive chat'}</button>` : ''}
       <button data-a="block" class="danger-txt">${u.blocked ? '✅ Unblock' : '⛔ Block'} ${esc(nameOf(u).split(' ')[0])}</button>
+      <button data-a="report" class="danger-txt">🚩 Report ${esc(nameOf(u).split(' ')[0])}</button>
     </div>`);
   $('#sheet .menu').onclick = async (e) => {
     const a = e.target.closest('button')?.dataset.a; if (!a) return;
@@ -1974,6 +2122,8 @@ async function openProfile(uid) {
       if (a === 'padi') { await addPadi(u); return openProfile(uid); }
       if (a === 'unpadi') { await api('padis/remove', { body: { user_id: uid } }); toast('Removed from padis'); loadPadis(); loadVibes(); return openProfile(uid); }
       if (a === 'nick') return nickSheet(u);
+      if (a === 'report') return reportSheet(u, dmHere ? S.chatId : null);
+      if (a === 'arch') { hideModal(); return setArchived(S.chatId, !S.chatArchived); }
       if (a === 'code') {
         const code = await safetyCode(KEYS.pub, u.public_key);
         return showModal(`<div class="profile-top"><div class="big-emoji">🔐</div><h2>Safety code</h2>
@@ -1982,7 +2132,7 @@ async function openProfile(uid) {
           <div class="row"><button class="btn ghost" id="cdBack">Back</button></div>`) || ($('#cdBack').onclick = () => openProfile(uid));
       }
       if (a === 'block') {
-        if (!u.blocked && !confirm(`Block ${nameOf(u)}? They won't be able to message you or see your vibes.`)) return;
+        if (!u.blocked && !confirm(`Block ${nameOf(u)}? Their messages and calls won't reach you, and they won't see your vibes, photo or last seen. They are not told.`)) return;
         await api(u.blocked ? 'blocks/remove' : 'blocks', { body: { user_id: uid } });
         toast(u.blocked ? 'Unblocked' : 'Blocked');
         if (S.chat && !S.chat.is_group && other().id === uid) { S.blockedByMe = !u.blocked; updateComposer(); }
@@ -1992,6 +2142,115 @@ async function openProfile(uid) {
     } catch (x) { toast(x.message); }
   };
 }
+/* ----- report (only what the user ticks is sent) ----- */
+function reportSheet(u, chatId) {
+  const msgs = chatId && chatId === S.chatId
+    ? S.loaded.filter((m) => m.sender_id === u.id && !['system', 'deleted'].includes(m.type) && !m.locked).slice(-30).reverse() : [];
+  const label = (m) => (m.type === 'text' ? m.text : `[${m.type === 'image' ? 'Photo' : m.type === 'video' ? 'Video' : 'Voice message'}]${m.text ? ' ' + m.text : ''}`);
+  showModal(`<h2>Report ${esc(nameOf(u))}</h2>
+    <p class="muted">Chats are end-to-end encrypted, so Yarn can only see what you choose to include below. Nothing else from this chat is uploaded.</p>
+    <p class="sec">Why are you reporting?</p>
+    <div class="radio-list" id="rpReason">${[['spam', 'Spam'], ['scam', 'Scam or fraud'], ['harassment', 'Harassment or bullying'], ['inappropriate', 'Inappropriate content'], ['impersonation', 'Pretending to be someone else'], ['other', 'Something else']]
+      .map(([v, l], i) => `<label><input type="radio" name="rp" value="${v}" ${i === 0 ? 'checked' : ''}> ${l}</label>`).join('')}</div>
+    ${msgs.length ? `<p class="sec">Messages to include (optional)</p><div class="rp-msgs">${msgs.map((m) => `<label class="rp-msg"><input type="checkbox" value="${m.id}"><span><b>${clock(m.created_at)}</b> ${esc(label(m).slice(0, 160))}</span></label>`).join('')}</div>
+      <p class="muted small">Photos, videos and voice notes are not uploaded. Only that one was sent, plus any caption.</p>` : ''}
+    <label class="flabel">Anything else? (optional)<textarea class="field" id="rpDetails" maxlength="1000" rows="3"></textarea></label>
+    <label class="setting"><div><strong>Also block ${esc(nameOf(u).split(' ')[0])}</strong><span>Their messages and calls won't reach you</span></div><input type="checkbox" class="switch" id="rpBlock" checked></label>
+    <div class="row"><button class="btn ghost" data-close>Cancel</button><button class="btn danger" id="rpGo">Send report</button></div>`);
+  $('#rpGo').onclick = async () => {
+    const ids = $$('.rp-msgs input:checked').map((x) => +x.value);
+    const items = msgs.filter((m) => ids.includes(m.id)).map((m) => ({ id: m.id, type: m.type, from: nameOf(u), at: m.created_at, text: label(m) }));
+    const block = $('#rpBlock').checked;
+    try {
+      await api('reports', { body: { ...reach(u), chat_id: chatId, reason: ($('#rpReason input:checked') || {}).value, details: $('#rpDetails').value, items, block } });
+      hideModal(); toast('Report sent. Thank you for keeping Yarn safe.');
+      if (block && S.chat && !S.chat.is_group && other().id === u.id) { S.blockedByMe = true; updateComposer(); }
+      loadChats();
+    } catch (e) { toast(e.message); }
+  };
+}
+/* ----- my Yarn ID, profile link and QR code ----- */
+let qrLoading = null;
+function loadQR() {
+  if (window.yarnQR) return Promise.resolve();
+  return qrLoading || (qrLoading = new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = '/qr.js'; sc.onload = res; sc.onerror = () => { qrLoading = null; rej(); }; document.head.appendChild(sc); }));
+}
+function qrSVG(text) {
+  const m = window.yarnQR(text, 'M'), n = m.length, q = 4;
+  let d = '';
+  m.forEach((row, y) => row.forEach((on, x) => { if (on) d += `M${x + q} ${y + q}h1v1h-1z`; }));
+  return `<svg class="qr" viewBox="0 0 ${n + 2 * q} ${n + 2 * q}" role="img" aria-label="QR code for your profile link"><rect width="100%" height="100%" fill="#fff"/><path d="${d}" fill="#0F1B2D"/></svg>`;
+}
+const linkURL = (tok) => `${location.origin}/?p=${tok}`;
+async function shareProfileSheet() {
+  const me = S.me;
+  let tok = null;
+  try { tok = (await api('profile/link')).token; } catch {}
+  const draw = async () => {
+    showModal(`<div class="profile-top">${avatarHTML(me.display_name, 'u' + me.id, '', me.avatar_key)}<h2>${esc(me.display_name)}</h2></div>
+      <div class="idcard"><span>Your Yarn ID</span><strong>${fmtId(me.yarn_id)}</strong><button class="btn sm" id="spCopyId">Copy Yarn ID</button></div>
+      ${tok ? `<div class="qr-box" id="qrBox"><p class="muted">Loading QR code…</p></div>
+        <div class="link-box"><code id="spLink">${esc(linkURL(tok))}</code></div>
+        <div class="row"><button class="btn ghost" id="spCopy">Copy link</button><button class="btn" id="spShare">Share link</button></div>
+        <div class="row"><button class="btn ghost" id="spNew">🔄 New link</button><button class="btn danger" id="spOff">Turn off link</button></div>`
+      : `<p class="muted pad">You don't have a profile link right now. A link and QR code let friends message you without typing your ID.</p>
+        <div class="row"><button class="btn" id="spNew">Create my profile link</button></div>`}
+      <div class="info-box">👋 Anyone who has your Yarn ID or link can message you straight away. There's no approval step. You can block or report anyone.<br><br>🔄 Making a new link (or turning it off) stops the old link and QR code from working, but anyone who already knows your Yarn ID can still message you.<br><br>🔑 Your Yarn ID is just a contact address. It isn't a password and can't be used to sign in.</div>
+      <div class="row"><button class="btn ghost" data-close>Done</button></div>`);
+    $('#spCopyId').onclick = () => copyText(fmtId(me.yarn_id), 'Yarn ID copied');
+    if (tok) {
+      try { await loadQR(); $('#qrBox').innerHTML = qrSVG(linkURL(tok)); } catch { $('#qrBox').innerHTML = '<p class="muted">Could not load the QR code. The link still works.</p>'; }
+      $('#spCopy').onclick = () => copyText(linkURL(tok), 'Link copied');
+      $('#spShare').onclick = async () => {
+        if (navigator.share) { try { await navigator.share({ title: 'Chat with me on Yarn', text: `Message me on Yarn (${me.display_name})`, url: linkURL(tok) }); } catch {} }
+        else copyText(linkURL(tok), 'Link copied');
+      };
+      $('#spOff').onclick = async () => {
+        if (!confirm('Turn off your profile link? The current link and QR code will stop working. Your Yarn ID keeps working.')) return;
+        try { tok = (await api('profile/link', { body: { action: 'off' } })).token; toast('Profile link turned off'); draw(); } catch (e) { toast(e.message); }
+      };
+    }
+    $('#spNew').onclick = async () => {
+      if (tok && !confirm('Make a new link? Your old link and QR code will stop working.')) return;
+      try { tok = (await api('profile/link', { body: { action: 'new' } })).token; toast(tok ? 'New profile link ready' : 'Done'); draw(); } catch (e) { toast(e.message); }
+    };
+  };
+  draw();
+}
+function encryptionInfo() {
+  showModal(`<h2>🔒 How Yarn protects your messages</h2>
+    <div class="enc-info">
+      <p><b>What's end-to-end encrypted</b><br>Text messages, photos, videos, voice notes, captions, replies and vibes sent with the current app. They're locked on your device and can only be unlocked by the people they were sent to. Yarn's server stores only scrambled copies it can't read.</p>
+      <p><b>How the keys work</b><br>When you sign up, your device makes a key pair (P-256, using your browser's built-in Web Crypto). Each message gets a fresh random key, locked separately for each person in the chat. Your private key never leaves your device unprotected.</p>
+      <p><b>Using more than one device</b><br>A backup of your private key is stored on Yarn's server, locked with a key made from your password on your device. Your password itself is never sent to Yarn. A new phone unlocks the backup when you sign in.</p>
+      <p><b>If you forget your password</b><br>The backup can't be unlocked, so older encrypted messages can't be recovered. Use a strong password you'll remember: a weak password makes the backup easier to break.</p>
+      <p><b>What is not end-to-end encrypted</b><br>Your name, profile photo, about text, Yarn ID, group names, call history notes, who you chat with and when, and any messages sent before encryption was added to Yarn. Voice and video calls are encrypted between devices (WebRTC), but call keys aren&#39;t verified the way message keys are, so calls don&#39;t have the same end-to-end guarantee.</p>
+      <p><b>Yarn AI</b><br>Questions you send to Yarn AI are not end-to-end encrypted. They're sent to an AI service (and a web search service when needed) to get an answer. Your AI chat history is saved only on your device.</p>
+      <p><b>Good to know</b><br>Like any web app, Yarn's code is delivered by Yarn's server when it loads, so you're trusting that code. Yarn has not had an independent security audit. To double-check a chat, open the person's profile and use <b>Verify encryption</b> to compare safety codes.</p>
+    </div>
+    <div class="row"><button class="btn ghost" data-close>Got it</button></div>`);
+}
+function copyText(text, msg) { navigator.clipboard?.writeText(text).then(() => toast(msg), () => toast(text)); }
+// Someone opened a profile link: ?p=TOKEN (sign-in required before messaging)
+const pendingLink = (() => {
+  const tok = new URLSearchParams(location.search).get('p');
+  if (tok && /^[A-Za-z0-9_-]{16,64}$/.test(tok)) { LS.set('yarn_pending_link', tok); try { history.replaceState(null, '', '/'); } catch {} }
+  return LS.get('yarn_pending_link', null);
+})();
+if (pendingLink && !(S.token && S.me)) { const n = $('#authLinkNote'); if (n) n.classList.remove('hidden'); }
+async function openLinkProfile(tok) {
+  LS.del('yarn_pending_link');
+  showModal('<p class="muted pad">Opening profile…</p>');
+  try {
+    const d = await api('link/' + tok);
+    if (d.self) return showModal(`<div class="profile-top">${avatarHTML(d.user.display_name, 'u' + d.user.id, '', d.user.avatar_key)}<h2>This is your own profile link</h2><p class="muted">Share it with friends so they can message you.</p></div><div class="row"><button class="btn ghost" data-close>OK</button></div>`);
+    const u = d.user;
+    const acts = [{ label: 'Message', fn: openDirect }, u.is_padi ? { label: 'Padi ✓', cls: 'ghost', disabled: true } : { label: 'Add to padis', cls: 'ghost', fn: addPadi }];
+    showModal(`<h2>Shared profile</h2><p class="muted">Someone shared this Yarn profile with you. You can message them straight away.</p>${lookupCard(u, acts, '')}<div class="row"><button class="btn ghost" data-close>Not now</button></div>`);
+    $$('#sheet .uc-acts button').forEach((b) => (b.onclick = () => acts[+b.dataset.i].fn(u, b)));
+  } catch (e) { showModal(`<h2>Profile link</h2><p class="muted pad">${esc(e.message)}</p><div class="row"><button class="btn ghost" data-close>OK</button></div>`); }
+}
+
 function nickSheet(u) {
   showModal(`<h2>Nickname for ${esc(u.display_name)}</h2><p class="muted">Only you see this name.</p>
     <input class="field" id="nk" maxlength="40" value="${esc(u.nickname || '')}" placeholder="${esc(u.display_name)}">
@@ -2008,12 +2267,14 @@ $('#chatInfoBtn').onclick = () => {
   showModal(`<div class="profile-top">${avatarHTML(S.chat.name, 'g' + S.chat.id)}<h2>${esc(S.chat.name)}</h2><p class="muted">Group · ${S.members.length} members</p></div>
     <p class="sec">Members</p>
     <div class="ulist" id="gml">${S.members.map((m) => userRow(m, m.id === S.me.id ? '<span class="tag">You</span>' : isOnline(m.last_seen) ? '<span class="tag on">online</span>' : '')).join('')}</div>
-    <p class="sec">Add someone</p><div id="gaf"></div>
+    <p class="sec">Add someone by Yarn ID</p><div id="gaf"></div>
+    <div class="menu"><button data-ga="arch">🗄️ ${S.chatArchived ? 'Unarchive chat' : 'Archive chat'}</button></div>
     <div class="row"><button class="btn danger" id="leave">Leave group</button><button class="btn ghost" data-close>Close</button></div>`);
   $('#gml').onclick = (e) => { const r = e.target.closest('.urow'); if (r) openProfile(+r.dataset.uid); };
+  $('[data-ga="arch"]').onclick = () => { hideModal(); setArchived(S.chatId, !S.chatArchived); };
   finder($('#gaf'), () => [{ label: 'Add to group', fn: async (u) => {
     try {
-      await api(`chats/${S.chatId}/members`, { body: { user_id: u.id } });
+      await api(`chats/${S.chatId}/members`, { body: reach(u) });
       await loadChatDetails(); hideModal(); toast('Added'); pollMessages();
     } catch (e) { toast(e.message); }
   } }]);
@@ -2026,12 +2287,12 @@ $('#chatInfoBtn').onclick = () => {
 
 /* ================= padis tab ================= */
 async function loadPadis() {
-  try { const d = await api('padis'); S.padis = d.padis; S.serverNow = d.now; if (S.tab === 'padis') renderPadis(); } catch {}
+  try { const d = await api('padis'); S.padis = d.padis; S.serverNow = d.now; if (S.tab === 'padis') renderPadis(); if (S.chat) updateUnknownBar(); } catch {}
 }
 function renderPadis() {
   const host = $('#padisView');
   const mutual = S.padis.filter((u) => u.mutual).length;
-  host.innerHTML = `<div class="pad-find"><p class="pad-hint">Add a padi with their exact username</p><div id="pf"></div></div>
+  host.innerHTML = `<div class="pad-find"><p class="pad-hint">Add a padi with their Yarn ID. Saving someone doesn't need their approval.</p><div id="pf"></div></div>
     ${S.padis.length ? `<p class="sec">Your padis · ${S.padis.length}${mutual ? ` · ${mutual} mutual 🤝` : ''}</p>
     <div class="ulist big" id="pl">${S.padis.map((u) => userRow({ ...u, avatar_key: u.avatar_key },
       `<span class="tag ${u.mutual ? 'ok' : ''}">${u.mutual ? '🤝' : 'waiting'}</span>`).replace('class="avatar sm', `class="avatar sm ${isOnline(u.last_seen) ? 'online' : ''}`)).join('')}</div>`
@@ -2124,7 +2385,7 @@ async function openVibe(v, ownerKey) {
     text = r.text;
     if (v.type === 'image') url = await mediaURL(v.media_key, r.ck);
     if (v.type === 'video') url = await blobURL(v.media_key, r.ck, (r.meta || {}).mime);
-  } else if (v.type === 'image') url = media(v.media_key);
+  } else if (v.type === 'image') url = await mediaURL(v.media_key, null);
   return (v._p = { text, url });
 }
 function vibePhotoStep(data) {
@@ -2284,25 +2545,35 @@ async function showViewers(v) {
 }
 
 /* ================= settings ================= */
-function drawMe() { if (S.me) $('#meBtn').innerHTML = avatarHTML(S.me.display_name, S.me.username, 'sm', S.me.avatar_key); }
+function drawMe() { if (S.me) $('#meBtn').innerHTML = avatarHTML(S.me.display_name, 'u' + S.me.id, 'sm', S.me.avatar_key); }
 $('#meBtn').onclick = () => openSettings();
 function openSettings() {
   const me = S.me;
   showModal(`<div class="profile-top big-av">
-      <div class="av-edit">${avatarHTML(me.display_name, me.username, '', me.avatar_key)}<button id="avBtn" aria-label="Change photo">📷</button></div>
-      <h2>${esc(me.display_name)}</h2><p class="muted">@${esc(me.username)}</p>
+      <div class="av-edit">${avatarHTML(me.display_name, 'u' + me.id, '', me.avatar_key)}<button id="avBtn" aria-label="Change photo">📷</button></div>
+      <h2>${esc(me.display_name)}</h2>
       ${me.avatar_key ? '<button class="linkbtn" id="avDel">Remove photo</button>' : ''}
     </div>
+
+    <div class="idcard"><span>Your Yarn ID</span><strong>${me.yarn_id ? fmtId(me.yarn_id) : 'Getting your ID…'}</strong>
+      <div class="row"><button class="btn sm ghost" id="sCopyId">Copy Yarn ID</button><button class="btn sm" id="sShareProf">Share profile</button></div>
+      <small>Friends use this to message you. It's a contact address, not a password.</small></div>
 
     <p class="sec">Profile</p>
     <label class="flabel">Name<input class="field" id="sName" maxlength="40" value="${esc(me.display_name)}"></label>
     <label class="flabel">About<input class="field" id="sAbout" maxlength="140" value="${esc(me.about)}" placeholder="e.g. Available · Building things 🚀"></label>
-    <div class="row"><button class="btn ghost" id="copyUn">Copy username</button><button class="btn" id="sSave">Save profile</button></div>
+    <div class="row"><button class="btn" id="sSave">Save profile</button></div>
 
     <p class="sec">Privacy</p>
     <div class="setting"><div><strong>Who sees my last seen</strong><span>Online status and last seen time</span></div></div>
     <div class="seg" id="sPriv">${[['everyone', 'Everyone'], ['padis', 'My padis'], ['nobody', 'Nobody']].map(([k, l]) => `<button data-v="${k}" class="${me.seen_privacy === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <div class="setting"><div><strong>Vibes</strong><span>Only mutual padis can see your vibes</span></div><span class="tag ok">On</span></div>
+
+    <p class="sec">Chats</p>
+    <label class="setting"><div><strong>Keep chats archived</strong><span>On: archived chats stay archived when new messages arrive, and you won't get notifications for them. Off: a new message moves the chat back to your main list and notifies you as usual.</span></div><input type="checkbox" class="switch" id="sKeepArch" ${me.keep_archived !== false ? 'checked' : ''}></label>
+
+    <p class="sec">Calls</p>
+    <label class="setting"><div><strong>Silence calls from unsaved people</strong><span>Calls from people who aren't in your padis won't ring or notify you. They show up as missed calls in the chat.</span></div><input type="checkbox" class="switch" id="sSilence" ${me.silence_unknown ? 'checked' : ''}></label>
 
     <p class="sec">Appearance</p>
     <div class="seg" id="sTheme">${[['system', '📱 System'], ['light', '☀️ Light'], ['dark', '🌙 Dark']].map(([k, l]) => `<button data-v="${k}" class="${(S.prefs.theme || 'system') === k ? 'on' : ''}">${l}</button>`).join('')}</div>
@@ -2321,16 +2592,17 @@ function openSettings() {
       <button class="linkbtn" id="pinChange">Change PIN</button>` : ''}
 
     <p class="sec">Encryption</p>
-    <div class="setting"><div><strong>🔒 End-to-end encrypted</strong><span>Your messages, photos and vibes are locked on your device. Only the people you send them to can read them.</span></div><span class="tag ok">On</span></div>
+    <div class="setting"><div><strong>🔒 End-to-end encryption</strong><span>Messages, photos, videos, voice notes and vibes you send are encrypted on your device before they leave it. Some things, like names and profile photos, are not.</span></div><button class="btn sm ghost" id="sEncInfo">How it works</button></div>
 
     <p class="sec">App</p>
     <div class="setting"><div><strong>Install Yarn</strong><span>${isStandalone() ? 'Installed on this device' : 'Add Yarn to your home screen'}</span></div><button class="btn sm ${isStandalone() ? 'ghost' : ''}" id="sInstall">${isStandalone() ? 'Installed' : 'Install'}</button></div>
 
     <p class="sec">Devices</p>
-    <p class="muted dev-note">Log in on any phone or computer with your username and password. All your chats and media come with you, still end-to-end encrypted.</p>
+    <p class="muted dev-note">Log in on any phone or computer with your username and password. All your chats and media come with you, and encrypted messages stay encrypted.</p>
     <div class="ulist" id="devList"><p class="muted pad">Loading…</p></div>
 
     <p class="sec">Password</p>
+    <p class="muted dev-note">You sign in with your username <b>@${esc(me.username)}</b> and password. Your username is private: people find you by Yarn ID instead.</p>
     <input class="field" type="password" id="pCur" placeholder="Current password" autocomplete="current-password">
     <input class="field" type="password" id="pNew" placeholder="New password (6+ characters)" autocomplete="new-password">
     <div class="row"><button class="btn ghost" id="pSave">Change password</button></div>
@@ -2364,7 +2636,12 @@ function openSettings() {
   $('#avBtn').onclick = () => pickImage('avatar');
   const avDel = $('#avDel');
   if (avDel) avDel.onclick = async () => { try { const d = await api('profile/avatar', { body: { remove: true } }); saveMe(d.user); openSettings(); } catch (e) { toast(e.message); } };
-  $('#copyUn').onclick = () => { navigator.clipboard?.writeText('@' + me.username).then(() => toast('Username copied'), () => toast('@' + me.username)); };
+  $('#sCopyId').onclick = () => me.yarn_id && copyText(fmtId(me.yarn_id), 'Yarn ID copied');
+  $('#sShareProf').onclick = shareProfileSheet;
+  $('#sEncInfo').onclick = encryptionInfo;
+  const saveToggle = async (key, val, msg) => { try { const d = await api('profile', { body: { [key]: val } }); saveMe(d.user); toast(msg); S.chatsKey = ''; loadChats(); } catch (e) { toast(e.message); } };
+  $('#sKeepArch').onchange = (e) => saveToggle('keep_archived', e.target.checked, e.target.checked ? 'Archived chats will stay archived' : 'New messages will unarchive chats');
+  $('#sSilence').onchange = (e) => saveToggle('silence_unknown', e.target.checked, e.target.checked ? 'Calls from unsaved people are silenced' : 'All calls will ring');
   $('#sSave').onclick = async () => {
     try { const d = await api('profile', { body: { display_name: $('#sName').value, about: $('#sAbout').value } }); saveMe(d.user); toast('Profile saved'); }
     catch (e) { toast(e.message); }
@@ -2476,6 +2753,8 @@ async function startApp() {
   await loadChats(); loadPadis(); loadVibes();
   const deep = +new URLSearchParams(location.search).get('chat');
   if (deep) { history.replaceState(null, '', '/'); openChat(deep); }
+  const link = LS.get('yarn_pending_link', null);
+  if (link) openLinkProfile(link);
   pushState().then(async (st) => { if (st === 'on' || (st === 'off' && Notification.permission === 'granted')) S.pushOn = await enablePush(true); else maybeAskPush(); });
   clearInterval(vibeTimer); vibeTimer = setInterval(loadVibes, 30000);
   try { const d = await api('me'); saveMe(d.user); } catch {}
