@@ -1,4 +1,4 @@
-// Yarn chat API — Cloudflare Pages Function. Needs a D1 binding named DB.
+// Padi chat API — Cloudflare Pages Function. Needs a D1 binding named DB.
 
 const J = (data, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -115,7 +115,7 @@ async function ensureSchema(DB) {
   SCHEMA_OK = true;
 }
 
-/* ---------- Yarn IDs: random 12-digit contact addresses ---------- */
+/* ---------- Padi IDs: random 12-digit contact addresses ---------- */
 function randomDigits(n) {
   const out = [];
   while (out.length < n) {
@@ -134,7 +134,7 @@ async function assignYarnId(DB, userId) {
     const row = await DB.prepare('SELECT yarn_id FROM users WHERE id=?').bind(userId).first();
     if (row && row.yarn_id) return row.yarn_id;
   }
-  throw new Error('Could not create a Yarn ID. Please try again.');
+  throw new Error('Could not create a Padi ID. Please try again.');
 }
 async function backfillYarnIds(DB) {
   const r = await DB.prepare('SELECT id FROM users WHERE yarn_id IS NULL AND deleted=0 LIMIT 25').all();
@@ -305,118 +305,9 @@ const delBlob = (DB, key) => [
   DB.prepare('DELETE FROM blobs WHERE key=?').bind(key),
 ];
 
-/* ---------- Yarn AI: web search + model chain ---------- */
-const AI_CHITCHAT = /^(hi+|hello+|hey+|hola|yo|sup|thanks?( you)?|thank u|thx|ok(ay)?|cool|nice|lol|lmao|wow|good (morning|afternoon|evening|night)|how far|how are you|wetin dey|you dey|bye|goodnight)\b[\s!.?,]*(\w+[\s!.?]*)?$/i;
-const AI_FRESH = /\b(today|tonight|right now|currently|current|latest|recent(ly)?|news|breaking|this (week|month|year|weekend)|yesterday|tomorrow|202[4-9]|203\d|price|prices|rate|rates|exchange|naira|dollar|cedi|score|scores|fixture|fixtures|result|results|weather|forecast|who (is|are|won|wins)|president|governor|minister|ceo|election|trending|released?|launch(ed)?|stock|stocks|crypto|bitcoin|fuel|petrol|diesel|salary|jamb|waec|neco|schedule|opening hours|near me|how much|when (is|does|will|did)|where (can|do|to)|best .{2,40} in|top \d+|reviews?|vs\.?|versus|update|law|policy|tax|cbn|inec|nysc|visa|flight|ticket)\b/i;
-const AI_TRANSFORM = /^(please |pls |abeg |kindly )?(translate|rewrite|rephrase|paraphrase|proofread|correct|fix|shorten|summari[sz]e|improve|polish|format|continue|write (me )?(a |an |the |my )?\w*( \w+)? ?(poem|song|story|joke|caption|bio|speech|prayer|letter|email|message|text|cv|resume|apology|toast|essay|script|slogan|tweet|post)|tell me a (joke|story|riddle)|code|debug|solve|calculate|what is \d|\d+\s*[-+*/x×÷^]\s*\d+)/i;
-function shouldSearch(q) {
-  const t = String(q || '').trim();
-  if (t.length < 8 || AI_CHITCHAT.test(t)) return false;
-  if (AI_FRESH.test(t)) return true;
-  if (AI_TRANSFORM.test(t)) return false;
-  const words = t.split(/\s+/).length;
-  return words >= 3 && (/\?\s*$/.test(t) || /^(what|who|whom|whose|when|where|why|how|which|is|are|was|were|does|do|did|can|could|will|tell me|explain|give me|list|compare|define|meaning of|difference)\b/i.test(t));
-}
-function searchQuery(msgs) {
-  const users = msgs.filter((m) => m.role === 'user');
-  const last = (users[users.length - 1] || { content: '' }).content.trim();
-  const prev = users.length > 1 ? users[users.length - 2].content.trim() : '';
-  const q = last.split(/\s+/).length < 5 && prev ? prev.slice(0, 140) + ' ' + last : last;
-  return q.replace(/\s+/g, ' ').slice(0, 300);
-}
 async function sha256Hex(text) {
   const h = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
   return [...h].map((x) => x.toString(16).padStart(2, '0')).join('');
-}
-// Live web search through Tavily. Results are cached for 3 hours under a hash (the question text itself is never stored).
-async function webSearch(env, DB, q, t) {
-  const key = 'web:' + (await sha256Hex(q.toLowerCase()));
-  const hit = await DB.prepare('SELECT data FROM ai_cache WHERE k=? AND at>?').bind(key, t - 3 * 3600000).first();
-  if (hit) { try { return JSON.parse(hit.data); } catch {} }
-  const news = /\b(news|latest|breaking|headline|happened|today)\b/i.test(q);
-  const r = await fetch('https://api.tavily.com/search', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + env.TAVILY_API_KEY },
-    body: JSON.stringify({ query: q, search_depth: 'basic', max_results: 5, topic: news ? 'news' : 'general', include_answer: false }),
-    signal: AbortSignal.timeout(9000),
-  });
-  if (!r.ok) throw new Error('search ' + r.status);
-  const d = await r.json();
-  const results = (d.results || []).slice(0, 5)
-    .map((x) => ({ title: String(x.title || '').slice(0, 120), url: String(x.url || ''), content: String(x.content || '').replace(/\s+/g, ' ').slice(0, 650) }))
-    .filter((x) => /^https?:\/\//.test(x.url) && x.content);
-  if (!results.length) return null;
-  await DB.prepare('INSERT INTO ai_cache (k,data,at) VALUES (?,?,?) ON CONFLICT(k) DO UPDATE SET data=excluded.data, at=excluded.at').bind(key, JSON.stringify(results), t).run();
-  if (Math.random() < 0.05) await DB.prepare('DELETE FROM ai_cache WHERE at<?').bind(t - 86400000).run();
-  return results;
-}
-function aiSystem(me, t, results, canImages) {
-  const when = new Date(t).toLocaleString('en-NG', { timeZone: 'Africa/Lagos', dateStyle: 'full', timeStyle: 'short' });
-  let sys = `You are Yarn AI, a smart, honest and friendly assistant inside Yarn, a private chat app used mostly in Nigeria. The user is ${me.display_name}. Right now it is ${when} (Lagos time).\n\n`
-    + `HOW TO ANSWER\n`
-    + `- Accuracy comes first. Never invent facts, names, numbers, quotes, links or sources. If you are not sure, say so plainly.\n`
-    + `- Think carefully before answering maths, logic, code and multi-step questions, and show the key steps.\n`
-    + `- Be direct. Lead with the answer, then give useful detail. Keep simple answers short; go deeper only when the question needs it.\n`
-    + `- Use short paragraphs, **bold** for key terms, and bullet or numbered lists when they help. Use code blocks for code.\n`
-    + `- Assume a Nigerian context when it fits: ₦ for money, Nigerian places, laws and examples. If the user writes in Nigerian Pidgin, reply in Pidgin.\n`
-    + `- You can only see this conversation, not the user's chats, contacts or files. ${canImages ? 'The app (not you) creates pictures when the user says "draw ..." or taps the 🎨 button, so if they want a picture, tell them to do that.' : 'Image creation is not available right now.'}\n`;
-  if (results && results.length) {
-    sys += `\nLIVE WEB RESULTS (fetched just now, newer than your training data):\n`
-      + results.map((x, i) => `[${i + 1}] ${x.title}\n${x.url}\n${x.content}`).join('\n\n')
-      + `\n\nUse these results to answer. Prefer them over your own memory when they conflict. Cite the sources you use with their number like [1] or [2] right after the claim. If the results disagree or do not answer the question, say that honestly instead of guessing. Do not print the list of links yourself; the app shows them.`;
-  } else {
-    sys += `\nNo live web results are available for this message. If the question depends on recent events, current prices, rates, scores, or anything you cannot verify, say you can't check live information right now and give your best general knowledge clearly marked as possibly outdated.`;
-  }
-  return sys;
-}
-function aiChain(env) {
-  const big = [], small = [];
-  if (env.AI_API_KEY) {
-    const base = env.AI_API_URL || 'https://api.groq.com/openai/v1';
-    String(env.AI_API_MODELS || 'openai/gpt-oss-120b,llama-3.3-70b-versatile').split(',').map((x) => x.trim()).filter(Boolean)
-      .forEach((model) => big.push({ kind: 'openai', base, key: env.AI_API_KEY, model }));
-    String(env.AI_API_FALLBACK || 'llama-3.1-8b-instant').split(',').map((x) => x.trim()).filter(Boolean)
-      .forEach((model) => small.push({ kind: 'openai', base, key: env.AI_API_KEY, model }));
-  }
-  if (env.AI) {
-    big.push({ kind: 'cf', model: env.AI_MODEL || '@cf/meta/llama-3.3-70b-instruct-fp8-fast' });
-    small.push({ kind: 'cf', model: '@cf/meta/llama-3.1-8b-instruct-fast' }, { kind: 'cf', model: '@cf/meta/llama-3.2-3b-instruct' });
-  }
-  return [...big, ...small];
-}
-async function openStream(env, c, messages) {
-  if (c.kind === 'cf') return env.AI.run(c.model, { messages, stream: true, max_tokens: 1200 });
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 20000);
-  try {
-    const body = { model: c.model, messages, stream: true, max_tokens: 1400, temperature: 0.5 };
-    if (/gpt-oss/i.test(c.model)) body.reasoning_effort = 'low';
-    const r = await fetch(c.base.replace(/\/$/, '') + '/chat/completions', {
-      method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + c.key }, body: JSON.stringify(body), signal: ctrl.signal,
-    });
-    if (!r.ok || !r.body) throw new Error('provider ' + r.status);
-    return r.body;
-  } finally { clearTimeout(timer); }
-}
-// Reads a streamed reply (OpenAI-style or Cloudflare-style) and hands over each piece of text
-async function pumpStream(readable, onPiece) {
-  const reader = readable.getReader(), dec = new TextDecoder();
-  let buf = '';
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += typeof value === 'string' ? value : dec.decode(value, { stream: true });
-    let i;
-    while ((i = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-      if (!line.startsWith('data:')) continue;
-      const data = line.slice(5).trim();
-      if (!data || data === '[DONE]') continue;
-      let piece = '';
-      try { const j = JSON.parse(data); piece = j.response ?? j.choices?.[0]?.delta?.content ?? ''; } catch {}
-      if (typeof piece === 'string' && piece) await onPiece(piece);
-    }
-  }
 }
 
 const MSG_SELECT = `SELECT m.id,m.sender_id,m.type,m.body,m.media_key,m.created_at,m.reply_to,u.display_name AS sender_name,
@@ -544,16 +435,16 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
     return J({ user: meOut(me), enc_priv: me.enc_priv || null });
   }
 
-  // ---------- Find people by exact Yarn ID or profile link (metered) ----------
+  // ---------- Find people by exact Padi ID or profile link (metered) ----------
   if (m === 'GET' && p === 'users/lookup') {
     const id = cleanYarnId(url.searchParams.get('id'));
-    if (!/^\d{12}$/.test(id)) return err('A Yarn ID has 12 digits. Check it and try again.');
+    if (!/^\d{12}$/.test(id)) return err('A Padi ID has 12 digits. Check it and try again.');
     const rules = lookupRules(env, me, await ipKey(req), t);
     if (await rateCheck(DB, t, rules.miss, false)) return err(TOO_MANY, 429);
     if (await rateCheck(DB, t, rules.all)) return err(TOO_MANY, 429);
-    if (id === me.yarn_id) return err("That's your own Yarn ID.");
+    if (id === me.yarn_id) return err("That's your own Padi ID.");
     const u = await DB.prepare('SELECT id,display_name,avatar_key FROM users WHERE yarn_id=? AND deleted=0').bind(id).first();
-    if (!u) { await rateBump(DB, t, rules.miss); return err('No account found with that Yarn ID. Check the number and try again.', 404); }
+    if (!u) { await rateBump(DB, t, rules.miss); return err('No account found with that Padi ID. Check the number and try again.', 404); }
     return J({ user: await minimalProfile(DB, me, u, t) });
   }
   if (m === 'GET' && parts[0] === 'link' && parts[1]) {
@@ -628,94 +519,6 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
     const c = await DB.prepare('SELECT COUNT(*) AS c FROM blob_chunks WHERE key=?').bind(parts[1]).first();
     if (c.c >= bl.chunks) await DB.prepare('UPDATE blobs SET done=1 WHERE key=?').bind(parts[1]).run();
     return J({ ok: true, done: c.c >= bl.chunks });
-  }
-
-  // ---------- Yarn AI (Cloudflare Workers AI; chats are kept on the user's device, never stored here) ----------
-  const AI_LIMIT = parseInt(env.AI_DAILY_LIMIT || '40');
-  const today = new Date(t).toISOString().slice(0, 10);
-  const IMG_LIMIT = parseInt(env.AI_IMAGE_LIMIT || '10');
-  if (m === 'GET' && p === 'ai/usage') {
-    const [u, im] = await DB.batch([
-      DB.prepare('SELECT count FROM ai_usage WHERE user_id=? AND day=?').bind(me.id, today),
-      DB.prepare('SELECT count FROM ai_usage WHERE user_id=? AND day=?').bind(me.id, 'img:' + today),
-    ]);
-    const chain = aiChain(env);
-    return J({ enabled: chain.length > 0, web: !!env.TAVILY_API_KEY, images: !!env.AI, engine: chain[0] ? chain[0].model : null, used: u.results[0]?.count || 0, limit: AI_LIMIT, img_used: im.results[0]?.count || 0, img_limit: IMG_LIMIT });
-  }
-  // Create an image from a description
-  if (m === 'POST' && p === 'ai/image') {
-    if (!env.AI) return err('Yarn AI is not switched on yet. The app owner needs to add the Workers AI binding.', 503);
-    const b = await body();
-    const prompt = String(b.prompt || '').trim().slice(0, 600);
-    if (prompt.length < 3) return err('Describe the image you want me to create.');
-    if (/\b(nude|nudes|naked|nsfw|porn\w*|sex|sexy|sexual|explicit|topless|bottomless|lingerie|xxx|hentai|erotic\w*|fetish|gore|gory|beheading|dismember\w*|mutilat\w*)\b/i.test(prompt))
-      return err("Yarn AI can't create that kind of image. Try describing something else. 🙏");
-    const dayKey = 'img:' + today;
-    const used = await DB.prepare('SELECT count FROM ai_usage WHERE user_id=? AND day=?').bind(me.id, dayKey).first();
-    if (used && used.count >= IMG_LIMIT) return err(`You've made today's ${IMG_LIMIT} images. More tomorrow! 🎨`, 429);
-    await DB.prepare('INSERT INTO ai_usage (user_id,day,count) VALUES (?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET count=count+1').bind(me.id, dayKey).run();
-    try {
-      const out = await env.AI.run(env.AI_IMAGE_MODEL || '@cf/black-forest-labs/flux-1-schnell', { prompt, steps: 4 });
-      if (out && out.image) return J({ image: 'data:image/jpeg;base64,' + out.image });
-    } catch {}
-    try {
-      const png = await env.AI.run('@cf/bytedance/stable-diffusion-xl-lightning', { prompt });
-      if (png) return new Response(png, { headers: { 'content-type': 'image/png', 'cache-control': 'no-store' } });
-    } catch {}
-    await DB.prepare('UPDATE ai_usage SET count=MAX(count-1,0) WHERE user_id=? AND day=?').bind(me.id, dayKey).run();
-    return err("Couldn't create that image right now. Please try again in a minute.", 503);
-  }
-  if (m === 'POST' && p === 'ai/chat') {
-    const chain = aiChain(env);
-    if (!chain.length) return err('Yarn AI is not switched on yet. The app owner needs to add the AI key or the Workers AI binding.', 503);
-    const b = await body();
-    let msgs = (Array.isArray(b.messages) ? b.messages : []).slice(-16)
-      .filter((x) => x && ['user', 'assistant'].includes(x.role) && typeof x.content === 'string' && x.content.trim())
-      .map((x) => ({ role: x.role, content: x.content.slice(0, 4000) }));
-    if (!msgs.length || msgs[msgs.length - 1].role !== 'user') return err('Ask a question first.');
-    let total = 0;
-    const keep = [];
-    for (let k = msgs.length - 1; k >= 0; k--) { total += msgs[k].content.length; if (total > 9000 && keep.length) break; keep.unshift(msgs[k]); }
-    msgs = keep;
-    while (msgs.length && msgs[0].role !== 'user') msgs.shift();
-    const used = await DB.prepare('SELECT count FROM ai_usage WHERE user_id=? AND day=?').bind(me.id, today).first();
-    if (used && used.count >= AI_LIMIT) return err(`You've used today's ${AI_LIMIT} Yarn AI messages. They reset tomorrow. 🌙`, 429);
-    await DB.prepare('INSERT INTO ai_usage (user_id,day,count) VALUES (?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET count=count+1').bind(me.id, today).run();
-    const wantWeb = b.web !== false && !!env.TAVILY_API_KEY;
-    const WEB_LIMIT = parseInt(env.AI_SEARCH_LIMIT || '8');
-    const { readable, writable } = new TransformStream();
-    const w = writable.getWriter(), enc = new TextEncoder();
-    const send = (o) => w.write(enc.encode('data: ' + (typeof o === 'string' ? o : JSON.stringify(o)) + '\n\n'));
-    waitUntil((async () => {
-      let sent = 0, results = null, notice = null;
-      try {
-        const q = searchQuery(msgs);
-        if (wantWeb && shouldSearch(q)) {
-          const wk = 'web:' + today;
-          const wu = await DB.prepare('SELECT count FROM ai_usage WHERE user_id=? AND day=?').bind(me.id, wk).first();
-          if (!wu || wu.count < WEB_LIMIT) {
-            await send({ status: 'searching' });
-            await DB.prepare('INSERT INTO ai_usage (user_id,day,count) VALUES (?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET count=count+1').bind(me.id, wk).run();
-            try { results = await webSearch(env, DB, q, t); } catch {}
-            if (results) await send({ sources: results.map(({ title, url }) => ({ title, url })) });
-            else notice = "I couldn't search the web for this one, so the answer may be out of date.";
-          } else notice = "You've used today's web searches, so this answer comes from my own knowledge and may be out of date.";
-        }
-        const messages = [{ role: 'system', content: aiSystem(me, t, results, !!env.AI) }, ...msgs];
-        for (const c of chain) {
-          try {
-            const stream = await openStream(env, c, messages);
-            await pumpStream(stream, async (piece) => { sent += piece.length; await send({ response: piece }); });
-            if (sent) { await send({ model: c.model }); break; }
-          } catch { if (sent) break; }
-        }
-        if (!sent) {
-          await DB.prepare('UPDATE ai_usage SET count=MAX(count-1,0) WHERE user_id=? AND day=?').bind(me.id, today).run();
-          await send({ error: 'Yarn AI is busy right now. Please try again in a minute.' });
-        } else if (notice) await send({ notice });
-      } catch {} finally { try { await send('[DONE]'); await w.close(); } catch {} }
-    })());
-    return new Response(readable, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store', 'x-accel-buffering': 'no' } });
   }
 
   // ---------- Calls: 1-to-1 voice & video (WebRTC; audio/video flow phone-to-phone, encrypted) ----------
@@ -941,7 +744,7 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
     const b = await body();
     const tgt = await reachable(DB, me, b, t);
     const id = tgt ? tgt.id : 0;
-    if (!id || id === me.id) return err('Add padis using their Yarn ID or profile link.');
+    if (!id || id === me.id) return err('Add padis using their Padi ID or profile link.');
     if (!(await DB.prepare('SELECT 1 FROM users WHERE id=? AND deleted=0').bind(id).first())) return err('User not found.');
     const nick = b.nickname !== undefined ? String(b.nickname || '').trim().slice(0, 40) || null : undefined;
     if (nick === undefined)
@@ -1102,10 +905,10 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
   if (m === 'POST' && p === 'chats/direct') {
     const b = await body();
     const tgt = await reachable(DB, me, b, t);
-    if (!tgt) return err('Start a chat using their Yarn ID or profile link.', 404);
+    if (!tgt) return err('Start a chat using their Padi ID or profile link.', 404);
     const other = await DB.prepare('SELECT id,deleted FROM users WHERE id=?').bind(tgt.id).first();
-    if (!other || other.deleted) return err('No account found with that Yarn ID.');
-    if (other.id === me.id) return err("That's your own Yarn ID.");
+    if (!other || other.deleted) return err('No account found with that Padi ID.');
+    if (other.id === me.id) return err("That's your own Padi ID.");
     const key = [me.id, other.id].sort((a, c) => a - c).join(':');
     const found = await DB.prepare('SELECT id FROM chats WHERE dm_key=?').bind(key).first();
     if (found) {
@@ -1134,7 +937,7 @@ async function route(req, DB, parts, waitUntil = (p) => p, env = {}) {
       if (seen.has(uid)) continue;
       if ((await connectedTo(DB, me.id, uid)) && !(await hasBlocked(DB, uid, me.id)) && (await DB.prepare('SELECT 1 FROM users WHERE id=? AND deleted=0').bind(uid).first())) { users.push({ id: uid }); seen.add(uid); }
     }
-    // People found by Yarn ID or profile link (signed lookup tickets); adding someone new counts toward the new-contact limit
+    // People found by Padi ID or profile link (signed lookup tickets); adding someone new counts toward the new-contact limit
     for (const tk of (Array.isArray(b.tickets) ? b.tickets : []).slice(0, 50)) {
       const uid = await readTicket(DB, me.id, tk, t);
       if (!uid || seen.has(uid) || (await hasBlocked(DB, uid, me.id)) || !(await DB.prepare('SELECT 1 FROM users WHERE id=? AND deleted=0').bind(uid).first())) continue;
