@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="theme-color" content="#FFFFFF">
-<title>Yarn</title>
+<title>Padi</title>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="Yarn">
+<meta name="apple-mobile-web-app-title" content="Padi">
 <meta name="description" content="Private chats with friends, groups, calls and vibes.">
-<meta property="og:title" content="Chat on Yarn">
+<meta property="og:title" content="Chat on Padi">
 <meta property="og:description" content="Private chats with friends, groups, calls and vibes.">
 <meta property="og:type" content="website">
 <meta name="robots" content="noindex">
@@ -28,9 +28,9 @@
 <!-- Login / sign up -->
 <section id="auth" class="auth hidden">
   <div class="auth-hero">
-    <div class="brand light">yarn<span class="dot"></span></div>
+    <div class="brand light">padi<span class="dot"></span></div>
     <h1>Talk to your people. Fast.</h1>
-    <p>Chat with friends using a private Yarn ID. No phone number needed. Messages and media are end-to-end encrypted.</p>
+    <p>Chat with friends using a private Padi ID. No phone number needed. Messages and media are end-to-end encrypted.</p>
     <div class="hero-chat" aria-hidden="true">
       <div class="hb in">Where you dey? 👀</div>
       <div class="hb out">On my way! 10 mins 🚗</div>
@@ -42,7 +42,7 @@
     <div class="auth-card">
       <h2 id="authTitle">Welcome back</h2>
       <p class="auth-sub" id="authSub">Log in to continue your chats.</p>
-      <p class="auth-link-note hidden" id="authLinkNote">🔗 Someone shared their Yarn profile with you. Log in or sign up to message them.</p>
+      <p class="auth-link-note hidden" id="authLinkNote">🔗 Someone shared their Padi profile with you. Log in or sign up to message them.</p>
       <div class="tabs" role="tablist">
         <button type="button" data-tab="login" class="on">Log in</button>
         <button type="button" data-tab="register">Sign up</button>
@@ -68,7 +68,7 @@
 <section id="app" class="app hidden">
   <aside class="side">
     <header class="side-head">
-      <div class="brand sm">yarn<span class="dot"></span></div>
+      <div class="brand sm">padi<span class="dot"></span></div>
       <div class="head-actions">
         <button class="icon" id="newGroupBtn" aria-label="New group" title="New group">
           <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 19c.6-3.3 3-5 6-5s5.4 1.7 6 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M18 8v6M15 11h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -117,7 +117,7 @@
     <div id="empty" class="pane-empty">
       <div class="empty-art" aria-hidden="true"><span class="hb in">Hi 👋</span><span class="hb out">Hey! What's up?</span></div>
       <h2>Your chats live here</h2>
-      <p>Pick a conversation, or start a new one with someone's username.</p>
+      <p>Pick a conversation, or start a new one with a friend's Padi ID.</p>
     </div>
 
     <div id="chatView" class="chat hidden">
@@ -154,11 +154,16 @@
           <button type="button" class="attach" id="camBtn" aria-label="Camera" title="Camera">
             <svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.6" fill="none" stroke="currentColor" stroke-width="2"/></svg>
           </button>
+          <div class="rec-hold" id="recHold" aria-hidden="true">
+            <span class="rec-dot"></span><span id="recHoldTime" class="rec-time">0:00</span>
+            <span class="rec-slide"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="recSlideTxt">Slide to cancel</span></span>
+          </div>
         </div>
-        <button class="send" id="sendBtn" aria-label="Send or record voice">
+        <button class="send" id="sendBtn" aria-label="Send, or hold to record a voice message">
           <svg class="ic-send" viewBox="0 0 24 24"><path d="M4.5 12.5L20 4l-5 16-3-6.5z" fill="currentColor"/></svg>
           <svg class="ic-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         </button>
+        <div class="rec-lock" id="recLock" aria-hidden="true"><span>🔒</span><svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
       </form>
       <div id="recBar" class="rec-bar hidden">
         <button class="icon rec-cancel" id="recCancel" aria-label="Delete recording">
@@ -168,36 +173,6 @@
         <span class="rec-wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
         <button class="send ready" id="recSend" aria-label="Send voice message"><svg viewBox="0 0 24 24"><path d="M4.5 12.5L20 4l-5 16-3-6.5z" fill="currentColor"/></svg></button>
       </div>
-    </div>
-    <div id="aiView" class="chat ai-chat hidden">
-      <header class="chat-head">
-        <button class="icon back" id="aiBack" aria-label="Back to chats">
-          <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-        <div class="chat-title">
-          <span class="avatar ai-av">✨</span>
-          <span class="chat-title-text"><strong>Yarn AI</strong><small id="aiSub">Ask me anything</small></span>
-        </div>
-        <button class="icon" id="aiNew" aria-label="New AI chat" title="New chat">
-          <svg viewBox="0 0 24 24"><path d="M4 20l4-1 11-11-3-3L5 16z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/></svg>
-        </button>
-      </header>
-      <div id="aiMsgs" class="msgs"></div>
-      <form id="aiForm" class="composer">
-        <div class="compose-box">
-          <button type="button" class="attach ai-img-btn ai-web-btn on" id="aiWebBtn" aria-label="Search the web" title="Search the web">
-            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
-          </button>
-          <button type="button" class="attach ai-img-btn" id="aiImgBtn" aria-label="Create an image" title="Create an image">
-            <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.2 0 1.8-.8 1.8-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.7 1.7-1.7H16a5 5 0 0 0 5-5c0-4-4-7.2-9-7.2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="7.5" cy="11" r="1.3" fill="currentColor"/><circle cx="10" cy="7" r="1.3" fill="currentColor"/><circle cx="15" cy="7.5" r="1.3" fill="currentColor"/></svg>
-          </button>
-          <textarea id="aiText" rows="1" placeholder="Ask Yarn AI anything…" aria-label="Ask Yarn AI"></textarea>
-        </div>
-        <button class="send ready" id="aiSend" aria-label="Send">
-          <svg class="ic-send" viewBox="0 0 24 24"><path d="M4.5 12.5L20 4l-5 16-3-6.5z" fill="currentColor"/></svg>
-          <svg class="ic-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor"/></svg>
-        </button>
-      </form>
     </div>
   </main>
 </section>
@@ -262,7 +237,7 @@
 
 <div id="lock" class="lock hidden">
   <div class="lock-box">
-    <div class="brand light">yarn<span class="dot"></span></div>
+    <div class="brand light">padi<span class="dot"></span></div>
     <p id="lockMsg" class="lock-msg">Enter your PIN</p>
     <div class="pin-dots" id="pinDots"><i></i><i></i><i></i><i></i></div>
     <div class="keypad" id="keypad">

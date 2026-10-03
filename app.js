@@ -1,5 +1,5 @@
-// Yarn chat — frontend. Change the app name here and in index.html.
-const APP_NAME = 'Yarn';
+// Padi chat — frontend. Change the app name here and in index.html.
+const APP_NAME = 'Padi';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -359,7 +359,7 @@ const isStandalone = () => matchMedia('(display-mode: standalone)').matches || n
 const isIOS = () => /iphone|ipad|ipod/i.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const isAndroid = () => /android/i.test(UA);
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; });
-window.addEventListener('appinstalled', () => { installEvt = null; hideModal(); toast('Yarn is installed 🎉'); });
+window.addEventListener('appinstalled', () => { installEvt = null; hideModal(); toast('Padi is installed 🎉'); });
 const swOK = 'serviceWorker' in navigator && location.protocol === 'https:' && window.top === window;
 if (swOK) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -389,7 +389,7 @@ async function pushState() {
 }
 async function enablePush(quiet = false) {
   try {
-    if (!pushSupported()) { if (!quiet) toast(isIOS() ? 'Install Yarn to your Home Screen first.' : 'This browser does not support notifications.'); return false; }
+    if (!pushSupported()) { if (!quiet) toast(isIOS() ? 'Install Padi to your Home Screen first.' : 'This browser does not support notifications.'); return false; }
     const perm = Notification.permission === 'granted' ? 'granted' : quiet ? Notification.permission : await Notification.requestPermission();
     if (perm !== 'granted') { if (!quiet) toast('Notifications were not allowed.'); return false; }
     const reg = await navigator.serviceWorker.ready;
@@ -416,10 +416,10 @@ async function maybeAskPush() {
   if (st === 'on' || st === 'denied' || st === 'unsupported') return;
   if (Date.now() - LS.get('yarn_push_ask', 0) < DAY_MS) return;
   setTimeout(() => {
-    if (!S.token || S.locked || S.chatId || AI.open || CALL.status !== 'idle' || !$('#modal').classList.contains('hidden')) return;
+    if (!S.token || S.locked || S.chatId || CALL.status !== 'idle' || !$('#modal').classList.contains('hidden')) return;
     if (st === 'install') return; // iPhone: the install guide comes first
     showModal(`<div class="profile-top"><div class="big-emoji">🔔</div><h2>Don't miss a message</h2>
-      <p class="muted">Turn on notifications to get alerts for new messages, even when Yarn is closed. Previews are unlocked on your phone, so they stay private.</p></div>
+      <p class="muted">Turn on notifications to get alerts for new messages, even when Padi is closed. Previews are unlocked on your phone, so they stay private.</p></div>
       <div class="row"><button class="btn ghost" id="paLater">Not now</button><button class="btn" id="paGo">Turn on</button></div>`);
     $('#paLater').onclick = () => { LS.set('yarn_push_ask', Date.now()); hideModal(); };
     $('#paGo').onclick = async () => { hideModal(); if (await enablePush()) { toast('Notifications are on 🔔'); } else LS.set('yarn_push_ask', Date.now()); };
@@ -430,19 +430,19 @@ const DOTS_IC = '<svg class="inl" viewBox="0 0 24 24"><circle cx="12" cy="5" r="
 function showInstallGuide() {
   const iosSafari = isIOS() && /safari/i.test(UA) && !/crios|fxios|edgios|opios/i.test(UA);
   let body;
-  if (isStandalone()) body = `<p class="muted">Yarn is already installed on this device. 🎉</p><div class="row"><button class="btn" data-close>Done</button></div>`;
-  else if (installEvt) body = `<p class="muted">Put Yarn on your home screen. It opens full screen like a normal app, loads faster and can alert you about new messages.</p>
-    <div class="row"><button class="btn ghost" id="instLater">Not now</button><button class="btn" id="instGo">Install Yarn</button></div>`;
+  if (isStandalone()) body = `<p class="muted">Padi is already installed on this device. 🎉</p><div class="row"><button class="btn" data-close>Done</button></div>`;
+  else if (installEvt) body = `<p class="muted">Put Padi on your home screen. It opens full screen like a normal app, loads faster and can alert you about new messages.</p>
+    <div class="row"><button class="btn ghost" id="instLater">Not now</button><button class="btn" id="instGo">Install Padi</button></div>`;
   else if (isIOS() && !iosSafari) body = `<ol class="steps"><li>Copy this page's link</li><li>Open it in <b>Safari</b> (iPhone only lets Safari add apps)</li><li>Tap ${SHARE_IC} <b>Share</b>, then <b>Add to Home Screen</b></li></ol>
     <div class="row"><button class="btn ghost" id="instLater">Not now</button><button class="btn" id="instCopy">Copy link</button></div>`;
   else if (isIOS()) body = `<ol class="steps"><li>Tap the ${SHARE_IC} <b>Share</b> button at the bottom of Safari</li><li>Scroll down and tap <b>Add to Home Screen</b> ➕</li><li>Tap <b>Add</b> at the top right</li></ol>
-    <p class="hint-box">🔔 On iPhone, message alerts only work after Yarn is added to your Home Screen (iOS 16.4 or newer).</p>
+    <p class="hint-box">🔔 On iPhone, message alerts only work after Padi is added to your Home Screen (iOS 16.4 or newer).</p>
     <div class="row"><button class="btn ghost" id="instLater">Not now</button><button class="btn" data-close>Got it</button></div>`;
   else if (isAndroid()) body = `<ol class="steps"><li>Tap the ${DOTS_IC} <b>menu</b> at the top right of Chrome</li><li>Tap <b>Install app</b> or <b>Add to Home screen</b></li><li>Tap <b>Install</b></li></ol>
     <div class="row"><button class="btn ghost" id="instLater">Not now</button><button class="btn" data-close>Got it</button></div>`;
-  else body = `<ol class="steps"><li>Use <b>Chrome</b> or <b>Edge</b></li><li>Click the install icon in the address bar, or open the ${DOTS_IC} menu</li><li>Choose <b>Install Yarn</b></li></ol>
+  else body = `<ol class="steps"><li>Use <b>Chrome</b> or <b>Edge</b></li><li>Click the install icon in the address bar, or open the ${DOTS_IC} menu</li><li>Choose <b>Install Padi</b></li></ol>
     <div class="row"><button class="btn ghost" id="instLater">Not now</button><button class="btn" data-close>Got it</button></div>`;
-  showModal(`<div class="install-head"><span class="app-icon">y<i></i></span><div><h2>Install Yarn</h2><p class="muted">Free · iPhone, Android and computer</p></div></div>${body}`);
+  showModal(`<div class="install-head"><span class="app-icon">p<i></i></span><div><h2>Install Padi</h2><p class="muted">Free · iPhone, Android and computer</p></div></div>${body}`);
   const later = $('#instLater'); if (later) later.onclick = () => { LS.set('yarn_install_dismiss', Date.now()); hideModal(); };
   const go = $('#instGo'); if (go) go.onclick = async () => { installEvt.prompt(); const r = await installEvt.userChoice; installEvt = null; hideModal(); if (r.outcome !== 'accepted') LS.set('yarn_install_dismiss', Date.now()); };
   const cp = $('#instCopy'); if (cp) cp.onclick = () => { navigator.clipboard?.writeText(location.origin).then(() => toast('Link copied. Paste it in Safari.'), () => toast(location.origin)); };
@@ -451,7 +451,7 @@ function maybeShowInstall() {
   if (isStandalone() || window.top !== window) return;
   if (Date.now() - LS.get('yarn_install_dismiss', 0) < 3 * DAY_MS) return;
   setTimeout(() => {
-    if (S.token && !S.locked && !S.chatId && !AI.open && CALL.status === 'idle' && $('#modal').classList.contains('hidden') && $('#story').classList.contains('hidden') && $('#cam').classList.contains('hidden')) showInstallGuide();
+    if (S.token && !S.locked && !S.chatId && CALL.status === 'idle' && $('#modal').classList.contains('hidden') && $('#story').classList.contains('hidden') && $('#cam').classList.contains('hidden')) showInstallGuide();
   }, 6000);
 }
 
@@ -505,7 +505,7 @@ function notifyMsg(c) {
       }).catch(() => {});
     }
   } else if (S.prefs.popups) {
-    banner(title, text, c.is_group ? avatarHTML(c.name, 'g' + c.id, 'sm') : avatarHTML(title, c.other_username, 'sm', c.other_avatar), () => openChat(c.id));
+    banner(title, text, c.is_group ? avatarHTML(c.name, 'g' + c.id, 'sm') : avatarHTML(title, 'u' + c.other_id, 'sm', c.other_avatar), () => openChat(c.id));
   }
 }
 
@@ -514,7 +514,7 @@ function deviceName() {
   const ua = navigator.userAgent;
   const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS X|Macintosh/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : 'Device';
   const br = /Edg\//.test(ua) ? 'Edge' : /SamsungBrowser/.test(ua) ? 'Samsung Internet' : /OPR|Opera/.test(ua) ? 'Opera' : /Firefox|FxiOS/.test(ua) ? 'Firefox' : /CriOS|Chrome/.test(ua) ? 'Chrome' : /Safari/.test(ua) ? 'Safari' : 'Browser';
-  const app = matchMedia('(display-mode: standalone)').matches || navigator.standalone ? 'Yarn app' : br;
+  const app = matchMedia('(display-mode: standalone)').matches || navigator.standalone ? 'Padi app' : br;
   return `${app} on ${os}`;
 }
 const deviceIcon = (d) => (/iPhone|Android|iPad/.test(d || '') ? '📱' : '💻');
@@ -562,12 +562,14 @@ function saveMe(u) { S.me = u; LS.set('yarn_me2', u); drawMe(); }
 function signOutLocal() {
   if (S.me) keyStore.del('id-' + S.me.id);
   keyStore.del('session'); S.pushOn = false;
-  KEYS = null; pairCache.clear(); mediaURLs.clear(); previewCache.clear();
+  KEYS = null; pairCache.clear(); mediaURLs.clear(); blobURLs.clear(); previewCache.clear(); CHAT_CACHE.clear();
+  try { caches.delete('yarn-media-v1'); } catch {}   // photos and voice notes saved on this device for speed
+  Object.keys(localStorage).forEach((k) => { if (k.startsWith('yarn_ai_')) localStorage.removeItem(k); });   // leftover chats from the removed AI assistant
   S.token = null; S.me = null; S.known = null; S.chats = []; S.chatsKey = ''; S.locked = false; S.modalLocked = false;
   LS.del('yarn_t2'); LS.del('yarn_me2');
   if (!$('#lock').classList.contains('hidden')) hidePinPad();
   clearTimeout(listTimer); clearTimeout(msgTimer); clearInterval(vibeTimer);
-  closeChat(false); hideModal(); if (AI.open) closeAI(false);
+  closeChat(false); hideModal();
   $('#app').classList.add('hidden'); $('#auth').classList.remove('hidden');
 }
 
@@ -577,7 +579,11 @@ const FAB_ICONS = {
   vibes: '<svg viewBox="0 0 24 24"><path d="M4 20l4-1 11-11-3-3L5 16z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/></svg>',
   padis: '<svg viewBox="0 0 24 24"><circle cx="10" cy="8" r="3.4" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M4 19c.6-3.3 3-5 6-5 1.3 0 2.5.3 3.4 1M18 13v6M15 16h6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
 };
+// each tab remembers where you had scrolled to (a hidden screen forgets its position, so we keep it ourselves)
+const TAB_SCROLLER = { chats: '#chatList', vibes: '#vibesView', padis: '#padisView' };
 function setTab(tab) {
+  S.tabScroll = S.tabScroll || {};
+  if (S.tab && TAB_SCROLLER[S.tab] && !$(TAB_SCROLLER[S.tab]).closest('.hidden')) S.tabScroll[S.tab] = $(TAB_SCROLLER[S.tab]).scrollTop;
   S.tab = tab;
   $$('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
   $('#sideTitle').textContent = { chats: S.showArchived ? 'Archived' : 'Chats', vibes: 'Vibes', padis: 'Padis' }[tab];
@@ -588,6 +594,8 @@ function setTab(tab) {
   $('#fab').setAttribute('aria-label', { chats: 'New chat', vibes: 'Post a vibe', padis: 'Add a padi' }[tab]);
   if (tab === 'vibes') { renderVibes(); loadVibes(); }
   if (tab === 'padis') { renderPadis(); loadPadis(); }
+  const y = S.tabScroll[tab] || 0;
+  if (y) { const el = $(TAB_SCROLLER[tab]); el.scrollTop = y; requestAnimationFrame(() => { el.scrollTop = y; }); }
 }
 $('#nav').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setTab(b.dataset.tab); });
 $('#fab').onclick = () => (S.tab === 'chats' ? openNewChat() : S.tab === 'vibes' ? openNewVibe() : openFindPadi());
@@ -626,6 +634,24 @@ async function decryptPreviews(list) {
   }));
 }
 const chatTitle = (c) => (c.is_group ? c.name : c.other_nick || c.other_name || 'Unknown');
+// Updates a list in place: rows that did not change are left exactly as they are (no flicker, no lost taps)
+function patchList(ul, rows) {
+  const have = new Map();
+  for (const el of [...ul.children]) { if (el.dataset.k) have.set(el.dataset.k, el); else el.remove(); }
+  rows.forEach((r, i) => {
+    let el = have.get(r.k);
+    if (el && el._h === r.html) have.delete(r.k);
+    else {
+      const t = document.createElement('template'); t.innerHTML = r.html.trim();
+      const n = t.content.firstElementChild; n.dataset.k = r.k; n._h = r.html;
+      if (el) { el.replaceWith(n); have.delete(r.k); }
+      el = n;
+    }
+    if (ul.children[i] !== el) ul.insertBefore(el, ul.children[i] || null);
+  });
+  have.forEach((el) => el.remove());
+  while (ul.children.length > rows.length) ul.lastElementChild.remove();
+}
 function renderChats() {
   const q = $('#filter').value.trim().toLowerCase();
   const f = S.filter, arch = !!S.showArchived;
@@ -644,22 +670,23 @@ function renderChats() {
         <div class="ci-bot"><span class="ci-last">${archived.length} chat${archived.length === 1 ? '' : 's'}</span>${archUnread ? `<span class="badge muted-badge">${archUnread}</span>` : ''}</div></div></li>` : '';
   const archHead = S.showArchived
     ? `<li class="arch-head"><button id="archBack">‹ Back to chats</button><p>${S.me && S.me.keep_archived === false ? 'A new message moves a chat back to your main list.' : 'These chats stay archived when new messages arrive, and won’t notify you.'} Long-press or swipe a chat to unarchive.</p></li>` : '';
-  const lastAIm = LS.get(aiKey(), []).slice(-1)[0] || {}, lastAI = lastAIm.content, lastAIimg = lastAIm.image || lastAIm.expired;
-  const aiRow = f === 'all' && (!q || 'yarn ai assistant bot'.includes(q))
-    ? `<li class="chat-item ai-item ${AI.open ? 'active' : ''}" data-ai="1"><span class="avatar ai-av">✨</span>
-        <div class="ci-main"><div class="ci-top"><span class="ci-name">Yarn AI <span class="ai-badge">AI</span></span></div>
-        <div class="ci-bot"><span class="ci-last">${esc(lastAI ? lastAI.replace(/[*#`_]/g, '').slice(0, 80) : lastAIimg ? '🎨 Image' : 'Ask me anything ✨')}</span></div></div></li>` : '';
+  const rows = [];
+  const empty = (k, html) => rows.push({ k, html: `<li class="list-empty">${html}</li>` });
   if (S.showArchived) {
-    ul.innerHTML = archHead + (list.length ? list.map(chatRowHTML).join('') : `<li class="list-empty">${q ? 'No archived chats match your search.' : 'No archived chats.'}</li>`);
-    $('#archBack').onclick = () => { S.showArchived = false; renderChats(); };
+    rows.push({ k: 'archhead', html: archHead });
+    if (list.length) list.forEach((c) => rows.push({ k: 'c' + c.id, html: chatRowHTML(c) }));
+    else empty('e-arch', q ? 'No archived chats match your search.' : 'No archived chats.');
   } else if (!S.chats.length) {
-    ul.innerHTML = aiRow + `<li class="list-empty"><strong>No chats yet</strong>Start a chat with a friend's Yarn ID, or share yours from your profile.<br><button class="btn" id="emptyNew">Start a chat</button></li>`;
-    $('#emptyNew').onclick = openNewChat;
-  } else if (!list.length) {
-    ul.innerHTML = aiRow + archRow + `<li class="list-empty">${q ? 'No chats match your search.' : f === 'unread' ? 'You are all caught up. 🎉' : f === 'groups' ? 'No group chats yet. Tap the people icon at the top to create one.' : 'All your chats are archived. Open Archived above to see them.'}</li>`;
+    empty('e-none', `<strong>No chats yet</strong>Start a chat with a friend's Padi ID, or share yours from your profile.<br><button class="btn" id="emptyNew">Start a chat</button>`);
   } else {
-    ul.innerHTML = aiRow + archRow + list.map(chatRowHTML).join('');
+    if (archRow) rows.push({ k: 'arch', html: archRow });
+    if (list.length) list.forEach((c) => rows.push({ k: 'c' + c.id, html: chatRowHTML(c) }));
+    else empty('e-filter', q ? 'No chats match your search.' : f === 'unread' ? 'You are all caught up. 🎉' : f === 'groups' ? 'No group chats yet. Tap the people icon at the top to create one.' : 'All your chats are archived. Open Archived above to see them.');
   }
+  patchList(ul, rows);
+  const eb = $('#emptyNew'); if (eb) eb.onclick = openNewChat;
+  const ab = $('#archBack'); if (ab) ab.onclick = () => { S.showArchived = false; renderChats(); };
+  markActive();
   const total = S.chats.filter((c) => !c.archived).reduce((a, c) => a + (c.unread || 0), 0);
   document.title = total ? `(${total}) ${APP_NAME}` : APP_NAME;
   const b = $('#chatsBadge'); b.textContent = total > 99 ? '99+' : total; b.classList.toggle('hidden', !total);
@@ -679,7 +706,7 @@ function chatRowHTML(c) {
       }
       const typing = c.typing ? (c.is_group ? 'someone is typing…' : 'typing…') : '';
       const online = !c.is_group && isOnline(c.other_seen) ? 'online' : '';
-      return `<li class="chat-item ${c.unread ? 'unread' : ''} ${c.id === S.chatId ? 'active' : ''}" data-id="${c.id}">
+      return `<li class="chat-item ${c.unread ? 'unread' : ''}" data-id="${c.id}">
         ${c.is_group ? avatarHTML(c.name, 'g' + c.id) : avatarHTML(name, 'u' + c.other_id, online, c.other_avatar)}
         <div class="ci-main">
           <div class="ci-top"><span class="ci-name">${esc(name)}${c.archived && !S.showArchived ? ' <span class="tag">Archived</span>' : ''}</span><span class="ci-time">${listTime(c.last_msg_at)}</span></div>
@@ -718,24 +745,29 @@ function toastAction(msg, label, fn) {
   $('.toast-btn', t).onclick = () => { t.classList.remove('show', 'actionable'); fn(); };
   clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('show', 'actionable'), 4500);
 }
-let swipeBlockClick = false;
-$('#chatList').addEventListener('click', (e) => {
-  if (swipeBlockClick) { swipeBlockClick = false; return; }
-  const li = e.target.closest('.chat-item'); if (!li) return;
-  if (li.dataset.ai) openAI();
-  else if (li.dataset.arch) { S.showArchived = true; $('#filter').value = ''; renderChats(); }
+// A chat opens when the finger lifts, even if the list refreshed in between
+const listRow = (el) => (el && el.closest ? el.closest('#chatList .chat-item[data-id], #chatList .chat-item[data-arch]') : null);
+const rowKey = (li) => li.dataset.k || li.dataset.id;
+function activateRow(li) {
+  if (li.dataset.arch) { S.showArchived = true; $('#filter').value = ''; renderChats(); }
   else openChat(+li.dataset.id);
+}
+let tap = null, tapDoneAt = 0, listPressT = null, sw = null;
+$('#chatList').addEventListener('click', (e) => {
+  if (Date.now() - tapDoneAt < 700) return;       // this touch was already handled when the finger lifted
+  const li = listRow(e.target); if (li) activateRow(li);
 });
 // long-press (phone) or right-click (computer) → chat options
-let listPressT = null;
 $('#chatList').addEventListener('contextmenu', (e) => { const li = e.target.closest('.chat-item[data-id]'); if (!li) return; e.preventDefault(); chatMenu(+li.dataset.id); });
-// swipe left to archive / unarchive (touch screens)
-let sw = null;
 $('#chatList').addEventListener('pointerdown', (e) => {
-  const li = e.target.closest('.chat-item[data-id]'); if (!li || e.pointerType !== 'touch') return;
+  const li = listRow(e.target);
+  tap = li && e.pointerType !== 'mouse' ? { k: rowKey(li), x: e.clientX, y: e.clientY, t: Date.now() } : null;
+  if (!li || e.pointerType !== 'touch' || !li.dataset.id) return;
   sw = { li, x: e.clientX, y: e.clientY, dx: 0, on: false };
-  clearTimeout(listPressT); listPressT = setTimeout(() => { if (sw && !sw.on) { const id = +li.dataset.id; sw = null; swipeBlockClick = true; if (navigator.vibrate) try { navigator.vibrate(20); } catch {} chatMenu(id); } }, 550);
+  clearTimeout(listPressT);
+  listPressT = setTimeout(() => { if (sw && !sw.on) { const id = +li.dataset.id; sw = null; tap = null; tapDoneAt = Date.now(); vibe(20); chatMenu(id); } }, 550);
 });
+// swipe left to archive / unarchive (touch screens)
 $('#chatList').addEventListener('pointermove', (e) => {
   if (!sw) return;
   const dx = e.clientX - sw.x, dy = e.clientY - sw.y;
@@ -743,14 +775,21 @@ $('#chatList').addEventListener('pointermove', (e) => {
   if (!sw.on && dx < -12 && Math.abs(dx) > Math.abs(dy)) { sw.on = true; clearTimeout(listPressT); sw.li.classList.add('swiping'); }
   if (sw.on) { sw.dx = Math.min(0, Math.max(-140, dx)); sw.li.style.transform = `translateX(${sw.dx}px)`; sw.li.classList.toggle('swipe-go', sw.dx < -80); }
 });
-const swipeEnd = () => {
+function listUp(e, cancelled) {
   clearTimeout(listPressT);
+  const swiped = !!(sw && sw.on);
+  if (!cancelled && tap && !swiped && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) < 12 && Date.now() - tap.t < 700) {
+    const li = listRow(document.elementFromPoint(e.clientX, e.clientY) || e.target);
+    if (li && rowKey(li) === tap.k) { tapDoneAt = Date.now(); activateRow(li); }
+  }
+  tap = null;
   if (!sw) return;
   const { li, dx, on } = sw; sw = null;
   li.style.transform = ''; li.classList.remove('swiping', 'swipe-go');
-  if (on) { swipeBlockClick = true; setTimeout(() => (swipeBlockClick = false), 350); if (dx < -80) { const c = S.chats.find((x) => x.id === +li.dataset.id); if (c) setArchived(c.id, !c.archived); } }
-};
-['pointerup', 'pointercancel'].forEach((ev) => $('#chatList').addEventListener(ev, swipeEnd));
+  if (on) { tapDoneAt = Date.now(); if (!cancelled && dx < -80) { const c = S.chats.find((x) => x.id === +li.dataset.id); if (c) setArchived(c.id, !c.archived); } }
+}
+$('#chatList').addEventListener('pointerup', (e) => listUp(e, false));
+$('#chatList').addEventListener('pointercancel', (e) => listUp(e, true));
 $('#filter').addEventListener('input', renderChats);
 $('#filters').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
@@ -760,25 +799,53 @@ $('#filters').addEventListener('click', (e) => {
 });
 
 /* ================= open / close chat ================= */
-let msgTimer = null, lastMarked = 0;
+let msgTimer = null, lastMarked = 0, hideTimer = null, navSeq = 0;
+// Recently opened chats are kept in memory only (never saved), so opening them again is instant
+const CHAT_CACHE = new Map();
+function cacheChat() {
+  if (!S.chatId || !S.chat || !S.loaded.length) return;
+  CHAT_CACHE.delete(S.chatId);
+  const cut = S.loaded.length > 120;
+  CHAT_CACHE.set(S.chatId, { chat: S.chat, members: S.members, loaded: S.loaded.slice(-120), noOlder: S.noOlder && !cut, since: S.since,
+    readUpto: S.readUpto, deliveredUpto: S.deliveredUpto, reads: S.reads, archived: S.chatArchived, blockedByMe: S.blockedByMe });
+  while (CHAT_CACHE.size > 8) CHAT_CACHE.delete(CHAT_CACHE.keys().next().value);
+}
+const skeleton = () => `<div class="skel" aria-hidden="true">${[['l', 58], ['l', 40], ['r', 52], ['l', 66], ['r', 36], ['r', 56]].map(([d, w]) => `<i class="${d}" style="width:${w}%"></i>`).join('')}</div>`;
+const markActive = () => $$('#chatList .chat-item[data-id]').forEach((li) => li.classList.toggle('active', +li.dataset.id === S.chatId));
 async function openChat(id, push = true) {
   hideModal();
-  if (AI.open) closeAI(false);
+  clearTimeout(hideTimer);
   if (S.chatId === id) { if (isPhone()) document.body.classList.add('in-chat'); return; }
-  clearTimeout(msgTimer); lastMarked = 0;
-  Object.assign(S, { chatId: id, chat: null, members: [], loaded: [], lastId: 0, firstId: 0, noOlder: false, ids: new Set(), readUpto: 0, since: 0, typing: [], seen: 0, blockedByMe: false, blockedMe: false });
+  abortRecording();
+  if (S.chatId) cacheChat();
+  clearTimeout(msgTimer); lastMarked = 0; ++navSeq;
+  Object.assign(S, { chatId: id, chat: null, members: [], loaded: [], lastId: 0, firstId: 0, noOlder: false, ids: new Set(), readUpto: 0, deliveredUpto: 0, reads: [], since: 0, typing: [], seen: 0, blockedByMe: false, blockedMe: false, chatArchived: false, pinned: true });
   clearReply();
   const c = S.chats.find((x) => x.id === id);
-  if (c) setHeader(chatTitle(c), c.is_group ? 'g' + c.id : c.other_username, '', false, c.is_group ? null : c.other_avatar);
-  $('#msgs').innerHTML = '';
+  if (c) setHeader(chatTitle(c), c.is_group ? 'g' + c.id : 'u' + c.other_id, '', false, c.is_group ? null : c.other_avatar);
   $('#empty').classList.add('hidden'); $('#chatView').classList.remove('hidden');
   document.body.classList.add('in-chat');
-  updateComposer();
-  if (push && isPhone() && window.top === window) { try { history.pushState({ chat: id }, ''); } catch {} }
-  $$('.chat-item').forEach((li) => li.classList.toggle('active', !li.dataset.ai && +li.dataset.id === id));
+  if (push && isPhone() && window.top === window) {
+    try {
+      if (NAVH.ov && !overlays().length) { history.replaceState({ chat: id }, ''); NAVH.ov = false; } // a sheet was just closed by this tap: reuse its history entry
+      else if (history.state && history.state.chat) history.replaceState({ chat: id }, '');           // switching chats: don't stack entries
+      else history.pushState({ chat: id }, '');
+    } catch {}
+  }
+  markActive();
   if (!touch) $('#text').focus();
-  await loadChatDetails();
-  await pollMessages(true);
+  const hit = CHAT_CACHE.get(id);
+  if (hit) {
+    Object.assign(S, { chat: hit.chat, members: hit.members, blockedByMe: hit.blockedByMe, chatArchived: hit.archived, noOlder: hit.noOlder, since: hit.since, readUpto: hit.readUpto, deliveredUpto: hit.deliveredUpto, reads: hit.reads });
+    updateHeader(); updateComposer();
+    renderAll(hit.loaded.slice()); scrollBottom();
+    loadChatDetails(); pollMessages(false);       // catch up quietly with anything new
+    return;
+  }
+  $('#msgs').innerHTML = skeleton();
+  updateComposer();
+  const details = loadChatDetails();
+  await Promise.all([details, pollMessages(true, details)]);   // both requests at once, shown together
 }
 async function loadChatDetails() {
   const id = S.chatId;
@@ -788,18 +855,50 @@ async function loadChatDetails() {
     S.chat = d.chat; S.members = d.members; S.serverNow = d.now;
     S.blockedByMe = d.blocked_by_me; S.blockedMe = false; S.chatArchived = !!d.archived;
     updateHeader(); updateComposer();
-  } catch (e) { toast(e.message); }
+  } catch (e) { if (S.chatId === id) toast(e.message); }
 }
 function closeChat(back = true) {
-  clearTimeout(msgTimer);
+  abortRecording();
+  clearTimeout(msgTimer); clearTimeout(hideTimer); cacheChat(); ++navSeq;
   S.chatId = null; S.chat = null;
   document.body.classList.remove('in-chat');
-  $('#chatView').classList.add('hidden'); $('#empty').classList.remove('hidden');
   $$('.chat-item.active').forEach((li) => li.classList.remove('active'));
+  // On a phone the screen slides away with its content still showing; it is only cleared once it is out of sight
+  const finish = () => { if (S.chatId) return; $('#chatView').classList.add('hidden'); $('#empty').classList.remove('hidden'); $('#msgs').innerHTML = ''; };
+  if (isPhone()) hideTimer = setTimeout(finish, 320); else finish();
   if (back && window.top === window && history.state && history.state.chat) { try { history.back(); } catch {} }
 }
 $('#backBtn').onclick = () => closeChat(true);
-window.addEventListener('popstate', () => { if (S.chatId) closeChat(false); });
+
+/* ----- Back button / swipe-back: close the top sheet, camera, story or photo first; only then the chat ----- */
+const NAVH = { ov: false, ignore: 0 };
+const overlays = () => {
+  const o = [];
+  if (!$('#modal').classList.contains('hidden')) o.push('modal');
+  if (!$('#story').classList.contains('hidden')) o.push('story');
+  if (!$('#cam').classList.contains('hidden')) o.push('cam');
+  if (!$('#viewer').classList.contains('hidden')) o.push('viewer');
+  if (!$('#call').classList.contains('hidden')) o.push('call');
+  return o;
+};
+function syncOverlayHistory() {
+  const any = overlays().length > 0;
+  if (any && !NAVH.ov) { try { history.pushState({ ov: 1 }, ''); NAVH.ov = true; } catch {} }
+  else if (!any && NAVH.ov) { NAVH.ov = false; NAVH.ignore++; try { history.back(); } catch { NAVH.ignore--; } }
+}
+const ovObserver = new MutationObserver(syncOverlayHistory);
+['#modal', '#story', '#cam', '#viewer', '#call'].forEach((q) => ovObserver.observe($(q), { attributes: true, attributeFilter: ['class'] }));
+function closeOverlays() {                     // a call screen is never closed by Back; everything else is
+  if (!$('#modal').classList.contains('hidden') && !S.modalLocked) hideModal();
+  if (!$('#story').classList.contains('hidden')) closeStory();
+  if (!$('#cam').classList.contains('hidden')) closeCamera();
+  $('#viewer').classList.add('hidden');
+}
+window.addEventListener('popstate', () => {
+  if (NAVH.ignore > 0) { NAVH.ignore--; return; }
+  if (NAVH.ov) { NAVH.ov = false; closeOverlays(); syncOverlayHistory(); return; }
+  if (S.chatId) closeChat(false);
+});
 
 const other = () => S.members.find((m) => m.id !== S.me.id) || {};
 function setHeader(name, seed, sub, online, key) {
@@ -819,7 +918,7 @@ function updateHeader() {
     const o = other();
     const seen = S.blockedMe ? 0 : Math.max(o.last_seen || 0, S.seen || 0);
     const sub = S.typing.length ? 'typing…' : seenText(seen) || 'tap here for info';
-    setHeader(nameOf(o), o.username, sub, isOnline(seen), o.avatar_key);
+    setHeader(nameOf(o), 'u' + o.id, sub, isOnline(seen), o.avatar_key);
   }
 }
 const dismissedBars = new Set();
@@ -855,19 +954,20 @@ function updateComposer() {
 }
 
 /* ================= messages ================= */
-async function pollMessages(first = false) {
+async function pollMessages(first = false, gate = null) {
   clearTimeout(msgTimer);
   const id = S.chatId; if (!id) return;
   try {
     const d = await api(`chats/${id}/messages?` + (S.lastId && !first ? `after=${S.lastId}&` : '') + `since=${S.since}`);
     if (S.chatId !== id) return;
     await decryptAll(d.messages);
+    if (gate) await gate;
     if (S.chatId !== id) return;
     S.serverNow = d.now; S.since = d.now; S.readUpto = d.read_upto; S.deliveredUpto = d.delivered_upto || 0; S.reads = d.reads || []; S.seen = d.seen; S.typing = d.typing || [];
     if (first) {
       S.noOlder = d.messages.length < 50;
       renderAll(d.messages);
-      scrollBottom();
+      S.pinned = true; scrollBottom();
     } else if (d.messages.length) {
       const near = nearBottom();
       const incoming = d.messages.some((m) => m.sender_id !== S.me.id && !S.ids.has(m.id) && m.type !== 'system');
@@ -877,11 +977,24 @@ async function pollMessages(first = false) {
     }
     (d.deleted || []).forEach(markDeleted);
     updateTicks(); updateSeenLabel(); updateHeader(); markRead(); hydrateImages();
-  } catch (e) { if (first) toast(e.message); }
+  } catch (e) {
+    if (first && S.chatId === id) {
+      $('#msgs').innerHTML = '<button class="older retry" id="retryBtn">Could not load this chat. Tap to try again</button>';
+      $('#retryBtn').onclick = () => { $('#msgs').innerHTML = skeleton(); pollMessages(true, null); };
+    }
+  }
   clearTimeout(msgTimer);
   if (S.chatId === id) msgTimer = setTimeout(pollMessages, document.hidden ? 8000 : 1500);
 }
 const nearBottom = () => { const m = $('#msgs'); return m.scrollHeight - m.scrollTop - m.clientHeight < 140; };
+{
+  const box = $('#msgs');
+  const stick = () => { if (S.chatId && S.pinned) box.scrollTop = box.scrollHeight; };
+  box.addEventListener('scroll', () => { S.pinned = box.scrollHeight - box.scrollTop - box.clientHeight < 100; }, { passive: true });
+  box.addEventListener('load', stick, true);              // pictures finishing
+  box.addEventListener('loadedmetadata', stick, true);    // videos finishing
+  if (window.ResizeObserver) new ResizeObserver(stick).observe(box); // keyboard, reply bar, taller message box, banners
+}
 const scrollBottom = (smooth) => { const m = $('#msgs'); m.scrollTo({ top: m.scrollHeight, behavior: smooth ? 'smooth' : 'auto' }); };
 
 function msgHTML(m, prev, extra = '') {
@@ -1168,7 +1281,11 @@ $('#composer').addEventListener('submit', (e) => {
   e.preventDefault();
   const body = ta.value.trim();
   if (!S.chatId) return;
-  if (!body) return startVoice();
+  if (!body) {   // a touch or mouse press is handled by the hold-to-record code above; this is the keyboard route
+    if (e.submitter && e.submitter.id === 'sendBtn' && Date.now() - REC.lastPtr > 800 && REC.mode === 'idle' && navigator.mediaDevices?.getUserMedia && window.MediaRecorder)
+      grabMic().then((st) => beginRecording(st, true)).catch(() => toast('Allow microphone access to record voice messages.'));
+    return;
+  }
   ta.value = ''; autosize(); $('#sendBtn').classList.remove('ready'); if (touch) ta.focus();
   send({ type: 'text', text: body });
 });
@@ -1216,7 +1333,7 @@ async function chatRecipients() {
   const people = S.members.filter((x) => !x.deleted);
   if (!people.some((x) => x.id === S.me.id)) people.push({ id: S.me.id, public_key: KEYS.pub });
   const missing = people.filter((x) => !x.public_key);
-  if (missing.length && !S.warnedKeys) { S.warnedKeys = true; toast(`${nameOf(missing[0]).split(' ')[0]} needs to log in to the new Yarn before they can read encrypted messages.`); }
+  if (missing.length && !S.warnedKeys) { S.warnedKeys = true; toast(`${nameOf(missing[0]).split(' ')[0]} needs to log in to the new Padi before they can read encrypted messages.`); }
   return people;
 }
 // Send a video or voice note
@@ -1270,45 +1387,109 @@ function pickMime(kind) {
     : ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
   return opts.find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) || '';
 }
-const REC = { rec: null, chunks: [], start: 0, timer: null, stream: null, cancel: false };
-async function startVoice() {
-  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast('Voice messages are not supported in this browser.');
-  if (REC.rec && REC.rec.state === 'recording') return;
-  try { REC.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
-  catch { return toast('Allow microphone access to record voice messages.'); }
-  const mime = pickMime('audio');
-  REC.rec = new MediaRecorder(REC.stream, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : undefined);
-  REC.chunks = []; REC.cancel = false;
-  REC.rec.ondataavailable = (e) => { if (e.data && e.data.size) REC.chunks.push(e.data); };
-  REC.rec.onstop = () => {
-    REC.stream.getTracks().forEach((t) => t.stop());
-    const dur = (Date.now() - REC.start) / 1000;
-    showRecBar(false);
-    if (REC.cancel) return;
-    if (dur < 1) return toast('Hold on a bit longer to record.');
-    sendMedia('voice', new Blob(REC.chunks, { type: REC.rec.mimeType || mime || 'audio/webm' }), '', { dur: Math.round(dur) });
-  };
-  REC.rec.start(250); REC.start = Date.now();
-  showRecBar(true);
-  if (navigator.vibrate) try { navigator.vibrate(30); } catch {}
-  clearInterval(REC.timer);
-  REC.timer = setInterval(() => {
-    const sec = Math.floor((Date.now() - REC.start) / 1000);
-    $('#recTime').textContent = fmtDur(sec);
-    if (sec >= 300) stopVoice(false);
-  }, 250);
-}
-function stopVoice(cancel) {
-  REC.cancel = cancel; clearInterval(REC.timer);
-  if (REC.rec && REC.rec.state !== 'inactive') REC.rec.stop(); else showRecBar(false);
+/* Hold the mic to record, release to send. Slide left to cancel, slide up to lock (hands-free). */
+const REC = { mode: 'idle', seq: 0, rec: null, chunks: [], start: 0, timer: null, stream: null, mime: '', cancel: false, cancelIntent: false, held: false, pid: null, x0: 0, y0: 0, lastPtr: 0 };
+const vibe = (ms) => { if (navigator.vibrate) try { navigator.vibrate(ms); } catch {} };
+const micHint = () => toast('Hold the mic to record, release to send');
+const grabMic = () => navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+function recUI(on) {
+  const c = $('#composer');
+  c.classList.toggle('holding', on);
+  if (!on) { c.style.removeProperty('--dx'); c.style.removeProperty('--dy'); $('#recHold').classList.remove('cancel'); $('#recSlideTxt').textContent = 'Slide to cancel'; }
+  $('#recHoldTime').textContent = '0:00';
 }
 function showRecBar(on) {
   $('#recBar').classList.toggle('hidden', !on);
   $('#composer').classList.toggle('hidden', on);
   $('#recTime').textContent = '0:00';
 }
-$('#recCancel').onclick = () => { stopVoice(true); toast('Recording deleted'); };
-$('#recSend').onclick = () => stopVoice(false);
+function recTick() {
+  const sec = Math.floor((Date.now() - REC.start) / 1000);
+  $('#recHoldTime').textContent = fmtDur(sec); $('#recTime').textContent = fmtDur(sec);
+  if (sec >= 300) finishRecording(false);       // 5 minute limit: send what we have
+}
+function beginRecording(stream, locked) {
+  REC.chunks = []; REC.cancel = false; REC.cancelIntent = false; REC.mime = pickMime('audio'); REC.stream = stream;
+  let rec;
+  try { rec = new MediaRecorder(stream, REC.mime ? { mimeType: REC.mime, audioBitsPerSecond: 32000 } : undefined); }
+  catch { stream.getTracks().forEach((t) => t.stop()); REC.mode = 'idle'; REC.held = false; return toast('Voice messages are not supported in this browser.'); }
+  REC.rec = rec;
+  rec.ondataavailable = (e) => { if (e.data && e.data.size) REC.chunks.push(e.data); };
+  rec.onstop = () => {
+    stream.getTracks().forEach((t) => t.stop());
+    clearInterval(REC.timer);
+    const dur = (Date.now() - REC.start) / 1000, cancel = REC.cancel, chunks = REC.chunks, type = rec.mimeType || REC.mime || 'audio/webm';
+    REC.chunks = []; REC.rec = null; REC.mode = 'idle'; REC.held = false;
+    recUI(false); showRecBar(false);
+    if (cancel) return;
+    if (dur < 1) return micHint();
+    sendMedia('voice', new Blob(chunks, { type }), '', { dur: Math.round(dur) });
+  };
+  REC.start = Date.now(); rec.start(250);
+  REC.mode = locked ? 'locked' : 'holding';
+  if (locked) showRecBar(true); else recUI(true);
+  vibe(30);
+  clearInterval(REC.timer); REC.timer = setInterval(recTick, 250);
+}
+function finishRecording(cancel) {              // stop, then send (or throw away)
+  if (!REC.rec || REC.mode === 'idle' || REC.mode === 'starting') return;
+  REC.cancel = cancel;
+  try { if (REC.rec.state !== 'inactive') REC.rec.stop(); else REC.rec.onstop(); } catch { REC.rec && REC.rec.onstop && REC.rec.onstop(); }
+}
+function abortRecording() {                     // leaving the chat, signing out…: never send a recording to the wrong place
+  REC.seq++; REC.held = false;
+  if (REC.rec) finishRecording(true);
+  else { REC.mode = 'idle'; recUI(false); showRecBar(false); }
+}
+function lockRecording() {
+  if (REC.mode !== 'holding') return;
+  REC.mode = 'locked'; REC.held = false; REC.cancelIntent = false; recUI(false); showRecBar(true); vibe(20);
+}
+function holdStart() {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { REC.held = false; return toast('Voice messages are not supported in this browser.'); }
+  const id = ++REC.seq; REC.mode = 'starting';
+  // ask for the mic straight away, but only show "recording" once the finger has stayed down a moment (so a quick tap is just a tap)
+  Promise.all([grabMic(), new Promise((r) => setTimeout(r, 170))]).then(([stream]) => {
+    if (id !== REC.seq || !REC.held) { stream.getTracks().forEach((t) => t.stop()); if (id === REC.seq) REC.mode = 'idle'; return; }
+    beginRecording(stream, false);
+  }).catch(() => { REC.held = false; if (id === REC.seq) REC.mode = 'idle'; toast('Allow microphone access to record voice messages.'); });
+}
+function holdMove(dx, dy) {
+  if (REC.mode !== 'holding') return;
+  REC.cancelIntent = dx < -90;
+  $('#recHold').classList.toggle('cancel', REC.cancelIntent);
+  $('#recSlideTxt').textContent = REC.cancelIntent ? 'Release to cancel' : 'Slide to cancel';
+  const st = $('#composer').style;
+  st.setProperty('--dx', Math.max(-30, Math.min(0, dx * 0.7)) + 'px');
+  st.setProperty('--dy', Math.max(-110, Math.min(0, dy * 0.7)) + 'px');
+  if (!REC.cancelIntent && dy < -80) lockRecording();
+}
+function holdEnd(interrupted) {
+  REC.held = false;
+  if (REC.mode === 'starting') { REC.seq++; REC.mode = 'idle'; return micHint(); }   // a quick tap
+  if (REC.mode !== 'holding') return;
+  if (interrupted) return lockRecording();      // the phone took the touch away (call, notification…): keep the recording
+  if (REC.cancelIntent) { finishRecording(true); vibe(15); toast('Recording deleted'); return; }
+  finishRecording(false);
+}
+{
+  const sb = $('#sendBtn');
+  sb.addEventListener('pointerdown', (e) => {
+    REC.lastPtr = Date.now();
+    if (ta.value.trim() || !S.chatId || REC.mode !== 'idle' || (e.pointerType === 'mouse' && e.button !== 0)) return;   // with text typed it is simply "Send"
+    e.preventDefault();
+    try { sb.setPointerCapture(e.pointerId); } catch {}
+    REC.held = true; REC.pid = e.pointerId; REC.x0 = e.clientX; REC.y0 = e.clientY;
+    holdStart();
+  });
+  sb.addEventListener('pointermove', (e) => { if (REC.held && e.pointerId === REC.pid) holdMove(e.clientX - REC.x0, e.clientY - REC.y0); });
+  sb.addEventListener('pointerup', (e) => { if (REC.held && e.pointerId === REC.pid) holdEnd(false); });
+  sb.addEventListener('pointercancel', (e) => { if (REC.held && e.pointerId === REC.pid) holdEnd(true); });
+  sb.addEventListener('contextmenu', (e) => e.preventDefault());
+  document.addEventListener('visibilitychange', () => { if (document.hidden && REC.mode === 'holding') lockRecording(); });
+}
+$('#recCancel').onclick = () => { finishRecording(true); toast('Recording deleted'); };
+$('#recSend').onclick = () => finishRecording(false);
 
 /* ----- camera: tap for photo, hold for video ----- */
 const CAM = { stream: null, facing: 'environment', rec: null, chunks: [], mode: 'chat', holdT: null, recording: false, down: false, t0: 0, tick: null, discard: false };
@@ -1414,7 +1595,7 @@ function forwardSheet(m, opt = {}) {
   const list = S.chats.filter((c) => !c.other_deleted);
   showModal(`<h2>${opt.title || 'Forward to…'}</h2><p class="muted">${esc(snippet(m.type, m.text).slice(0, 80))}</p>
     <div class="ulist fwd">${list.map((c) => `<label class="urow"><input type="checkbox" class="fwchk" value="${c.id}">
-      ${c.is_group ? avatarHTML(c.name, 'g' + c.id, 'sm') : avatarHTML(chatTitle(c), c.other_username, 'sm', c.other_avatar)}
+      ${c.is_group ? avatarHTML(c.name, 'g' + c.id, 'sm') : avatarHTML(chatTitle(c), 'u' + c.other_id, 'sm', c.other_avatar)}
       <div class="ur-main"><strong>${esc(chatTitle(c))}</strong><span>${c.is_group ? 'Group' : '@' + esc(c.other_username || '')}</span></div></label>`).join('') || '<p class="muted pad">No chats yet.</p>'}</div>
     <div class="row"><button class="btn ghost" data-close>Cancel</button><button class="btn" id="fwGo">${opt.fwd === false ? 'Send' : 'Forward'}</button></div>`);
   $('#fwGo').onclick = async () => {
@@ -1452,7 +1633,7 @@ async function shareMsg(m) {
     const blob = await (await fetch(await msgMediaURL(m))).blob();
     const mime = blob.type || (m.meta || {}).mime || (m.type === 'image' ? 'image/jpeg' : '');
     const ext = m.type === 'image' ? 'jpg' : /mp4|m4a|aac/.test(mime) ? (m.type === 'voice' ? 'm4a' : 'mp4') : m.type === 'voice' ? 'webm' : 'webm';
-    file = new File([blob], `yarn-${m.type}-${m.id || Date.now()}.${ext}`, { type: mime || 'application/octet-stream' });
+    file = new File([blob], `padi-${m.type}-${m.id || Date.now()}.${ext}`, { type: mime || 'application/octet-stream' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) return await navigator.share({ files: [file], text: m.text || undefined });
     throw Object.assign(new Error('fallback'), { name: 'Fallback' });
   } catch (e) {
@@ -1465,232 +1646,6 @@ async function shareMsg(m) {
     toast('Could not share this message.');
   }
 }
-
-/* ================= Yarn AI (chatbot) ================= */
-// Conversations stay on this device. Each question is sent to the AI to answer, but nothing is stored on the server.
-const AI = { open: false, list: [], busy: false, ctrl: null, usage: null };
-const aiKey = () => 'yarn_ai_' + (S.me ? S.me.id : 0);
-function aiLoad() { AI.list = LS.get(aiKey(), []); }
-function aiSave() {
-  const list = AI.list.slice(-100).map((m) => ({ ...m }));
-  let kept = 0;
-  for (let i = list.length - 1; i >= 0; i--) if (list[i].image) { if (++kept > 8) { list[i].image = null; list[i].expired = true; } }
-  list.forEach((m) => { delete m.pendingImg; });
-  LS.set(aiKey(), list);
-}
-function md(src, sources) {
-  let s = esc(src || '');
-  const blocks = [];
-  s = s.replace(/```[\w-]*\n?([\s\S]*?)(```|$)/g, (_, c) => { blocks.push(`<pre><code>${c.replace(/\n$/, '')}</code></pre>`); return `\u0000${blocks.length - 1}\u0000`; });
-  s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-  s = s.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>').replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, '$1<i>$2</i>');
-  s = s.replace(/^#{1,4} (.*)$/gm, '<h4>$1</h4>');
-  s = s.replace(/(^|\n)((?:[-*•] .*(?:\n|$))+)/g, (_, pre, b) => pre + '<ul>' + b.trim().split('\n').map((l) => '<li>' + l.replace(/^[-*•] /, '') + '</li>').join('') + '</ul>');
-  s = s.replace(/(^|\n)((?:\d+[.)] .*(?:\n|$))+)/g, (_, pre, b) => pre + '<ol>' + b.trim().split('\n').map((l) => '<li>' + l.replace(/^\d+[.)] /, '') + '</li>').join('') + '</ol>');
-  s = s.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
-  if (sources && sources.length) s = s.replace(/\[(\d{1,2})\]/g, (all, n) => { const x = sources[+n - 1]; return x && /^https?:\/\//.test(x.url) ? `<a class="ai-cite" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${n}</a>` : all; });
-  s = s.replace(/\n/g, '<br>').replace(/<br>(<\/?(?:ul|ol|li|h4))/g, '$1').replace(/(<\/(?:ul|ol|h4)>)<br>/g, '$1');
-  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[i]);
-}
-const AI_SUGGEST = [
-  ['🎨', 'Draw a cute cat wearing a colourful agbada', 'img'],
-  ['📰', "What's the latest news in Nigeria today?", 'web'],
-  ['💡', 'Give me 5 small business ideas I can start with ₦50k'],
-  ['🗣️', 'Translate "I go soon come" into proper English'],
-];
-const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return 'source'; } };
-const modelLabel = (m) => (/gpt-oss-120b/i.test(m) ? 'GPT-OSS 120B' : /gpt-oss-20b/i.test(m) ? 'GPT-OSS 20B' : /llama-?3\.3-70b/i.test(m) ? 'Llama 3.3 70B' : /llama-?3\.1-8b/i.test(m) ? 'Llama 3.1 8B' : /llama-?3\.2-3b/i.test(m) ? 'Llama 3.2 3B' : String(m || '').split('/').pop());
-AI.web = LS.get('yarn_ai_web', true);
-function aiBubble(m, i) {
-  if (m.role === 'assistant' && (m.image || m.pendingImg || m.expired)) {
-    const inner = m.pendingImg ? '<span class="ai-img-wait"><span>🎨</span>Creating your image…</span>'
-      : m.expired ? '<span class="ai-img-wait gone">🖼️ This image is no longer saved on this device.</span>'
-      : `<span class="img ai-img" data-src="${m.image}"><img src="${m.image}" alt="${esc(m.prompt || 'AI image')}"></span>`;
-    return `<div class="m first ai-a" data-ai="${i}"><div class="who ai-who">✨ Yarn AI</div>${inner}
-      ${m.image ? `<div class="ai-acts"><button data-imgshare="${i}">⬇️ Save / Share</button><button data-imgsend="${i}">💬 Send to chat</button><button data-again="${i}">🔁 Try again</button></div>` : ''}</div>`;
-  }
-  if (m.role === 'user') return `<div class="m mine first ai-q" data-ai="${i}"><div class="txt">${linkify(m.content)}</div></div>`;
-  const body = m.content ? md(m.content, m.sources) : m.searching ? '<span class="ai-searching">🌐 Searching the web<span class="ai-dots"><i></i><i></i><i></i></span></span>' : '<span class="ai-dots"><i></i><i></i><i></i></span>';
-  const srcs = m.sources && m.sources.length ? `<div class="ai-srcs">${m.sources.map((x, k) => `<a class="ai-src" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer" title="${esc(x.title)}"><b>${k + 1}</b>${esc(hostOf(x.url))}</a>`).join('')}</div>` : '';
-  const notice = m.notice ? `<div class="ai-notice">ℹ️ ${esc(m.notice)}</div>` : '';
-  const foot = m.model && m.content && !m.error ? `<div class="ai-model">${m.sources && m.sources.length ? '🌐 Searched the web · ' : ''}${esc(modelLabel(m.model))}</div>` : '';
-  return `<div class="m first ai-a ${m.error ? 'ai-err' : ''}" data-ai="${i}"><div class="who ai-who">✨ Yarn AI</div><div class="txt md">${body}</div>${srcs}${notice}${foot}
-    ${m.content && !m.error ? `<div class="ai-acts"><button data-copy="${i}">📋 Copy</button></div>` : ''}</div>`;
-}
-function aiRender() {
-  const box = $('#aiMsgs');
-  if (!AI.list.length) {
-    box.innerHTML = `<div class="ai-empty"><div class="ai-orb">✨</div><h2>Hi ${esc((S.me.display_name || '').split(' ')[0])}, I'm Yarn AI</h2>
-      <p>Ask me anything: writing, ideas, translations, explanations. You can talk to me in Pidgin too.</p>
-      <div class="ai-chips">${AI_SUGGEST.filter(([, , k]) => !(k === 'img' && AI.usage && AI.usage.images === false) && !(k === 'web' && AI.usage && AI.usage.web === false)).map(([e, t]) => `<button data-q="${esc(t)}"><span>${e}</span>${esc(t)}</button>`).join('')}</div>
-      <p class="ai-note">🔒 Your AI chats are saved only on this device, and Yarn AI can't see your other chats. Your questions are sent to AI${AI.usage && AI.usage.web ? ' and web-search' : ''} services to get an answer, so they are <b>not</b> end-to-end encrypted like your chats with people.</p></div>`;
-  } else box.innerHTML = AI.list.map(aiBubble).join('');
-  box.scrollTop = box.scrollHeight;
-}
-function aiUsageText() {
-  const u = AI.usage; if (!u) return 'Ask me anything';
-  if (!u.enabled) return 'Not switched on yet';
-  const left = Math.max(0, u.limit - u.used);
-  const il = u.images === false ? null : Math.max(0, (u.img_limit || 0) - (u.img_used || 0));
-  return `${left} chats${il === null ? '' : ` · ${il} images`} left today`;
-}
-async function aiRefreshUsage() {
-  const first = !AI.usage;
-  try { AI.usage = await api('ai/usage'); } catch {}
-  const u = AI.usage;
-  if (u) { $('#aiWebBtn').classList.toggle('hidden', u.web === false); $('#aiImgBtn').classList.toggle('hidden', u.images === false); if (u.images === false) setImgMode(false); }
-  $('#aiSub').textContent = AI.busy ? 'typing…' : aiUsageText();
-  if (first && AI.open && !AI.list.length) aiRender();
-}
-function openAI(push = true) {
-  if (S.chatId) closeChat(false);
-  AI.open = true; aiLoad();
-  $('#empty').classList.add('hidden'); $('#chatView').classList.add('hidden'); $('#aiView').classList.remove('hidden');
-  document.body.classList.add('in-chat');
-  $$('.chat-item').forEach((li) => li.classList.toggle('active', !!li.dataset.ai));
-  if (push && isPhone() && window.top === window) { try { history.pushState({ ai: 1 }, ''); } catch {} }
-  aiRender(); aiRefreshUsage();
-  if (!touch) $('#aiText').focus();
-}
-function closeAI(back = true) {
-  if (!AI.open) return;
-  AI.open = false;
-  $('#aiView').classList.add('hidden'); $('#empty').classList.remove('hidden');
-  document.body.classList.remove('in-chat');
-  $$('.chat-item.active').forEach((li) => li.classList.remove('active'));
-  if (back && window.top === window && history.state && history.state.ai) { try { history.back(); } catch {} }
-  renderChats();
-}
-// Image requests: the 🎨 button, or messages like "draw a…" / "create an image of…"
-const IMG_RX = /^(?:please\s+|pls\s+|abeg\s+)?(?:can you\s+|could you\s+|help me\s+)?(?:draw|paint|sketch|(?:generate|create|make|design|produce|give me)\b.{0,40}\b(?:image|picture|pic|photo|drawing|illustration|logo|art|artwork|poster|flyer|wallpaper|avatar|portrait|painting|sticker|banner|cartoon))\b/i;
-AI.imgMode = false;
-function setImgMode(on) {
-  AI.imgMode = on;
-  $('#aiImgBtn').classList.toggle('on', on);
-  $('#aiText').placeholder = on ? 'Describe the image to create…' : 'Ask Yarn AI anything…';
-  if (on && !touch) $('#aiText').focus();
-}
-$('#aiImgBtn').onclick = () => setImgMode(!AI.imgMode);
-function paintWebBtn() { $('#aiWebBtn').classList.toggle('on', !!AI.web); }
-$('#aiWebBtn').onclick = () => { AI.web = !AI.web; LS.set('yarn_ai_web', AI.web); paintWebBtn(); toast(AI.web ? '🌐 Web search on. Answers use live results.' : 'Web search off. Answers use my own knowledge.'); };
-paintWebBtn();
-async function aiImage(prompt) {
-  prompt = prompt.trim(); if (!prompt || AI.busy) return;
-  AI.list.push({ role: 'user', content: '🎨 ' + prompt, t: Date.now() });
-  const ans = { role: 'assistant', content: '', prompt, pendingImg: true, t: Date.now() };
-  AI.list.push(ans); aiRender();
-  const idx = AI.list.length - 1, box = $('#aiMsgs');
-  AI.busy = true; $('#aiSend').classList.add('busy'); $('#aiSub').textContent = 'creating image…';
-  AI.ctrl = new AbortController();
-  try {
-    const res = await fetch('/api/ai/image', {
-      method: 'POST', signal: AI.ctrl.signal,
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + S.token },
-      body: JSON.stringify({ prompt }),
-    });
-    if (!res.ok) { let e = {}; try { e = await res.json(); } catch {} throw new Error(e.error || 'Could not create the image. Check your connection.'); }
-    let blob;
-    if ((res.headers.get('content-type') || '').includes('json')) blob = await (await fetch((await res.json()).image)).blob();
-    else blob = await res.blob();
-    ans.image = await compress(blob, 1024);
-  } catch (e) {
-    ans.content = e.name === 'AbortError' ? '_(stopped)_' : '⚠️ ' + e.message;
-    ans.error = e.name !== 'AbortError';
-  }
-  delete ans.pendingImg;
-  AI.busy = false; AI.ctrl = null; $('#aiSend').classList.remove('busy');
-  const el = box.querySelector(`[data-ai="${idx}"]`); if (el) el.outerHTML = aiBubble(ans, idx);
-  box.scrollTop = box.scrollHeight;
-  if (ans.error) AI.list = AI.list.filter((m) => m !== ans);
-  aiSave(); aiRefreshUsage();
-}
-async function aiAsk(text) {
-  text = text.trim(); if (!text || AI.busy) return;
-  if (AI.imgMode || (IMG_RX.test(text) && !(AI.usage && AI.usage.images === false))) return aiImage(text);
-  AI.list.push({ role: 'user', content: text, t: Date.now() });
-  const ans = { role: 'assistant', content: '', t: Date.now() };
-  AI.list.push(ans); aiRender();
-  AI.busy = true; $('#aiSend').classList.add('busy'); $('#aiSub').textContent = 'typing…';
-  const box = $('#aiMsgs'), idx = AI.list.length - 1;
-  const paint = () => {
-    const el = box.querySelector(`[data-ai="${idx}"]`); if (!el) return;
-    const near = box.scrollHeight - box.scrollTop - box.clientHeight < 160;
-    el.outerHTML = aiBubble(ans, idx);
-    if (near) box.scrollTop = box.scrollHeight;
-  };
-  AI.ctrl = new AbortController();
-  try {
-    const res = await fetch('/api/ai/chat', {
-      method: 'POST', signal: AI.ctrl.signal,
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + S.token },
-      body: JSON.stringify({ web: !!AI.web, messages: AI.list.slice(-17, -1).map(({ role, content }) => ({ role, content })) }),
-    });
-    if (!res.ok) { let e = {}; try { e = await res.json(); } catch {} throw new Error(e.error || 'Yarn AI could not answer. Check your connection.'); }
-    const reader = res.body.getReader(), dec = new TextDecoder();
-    let buf = '', last = 0, streamErr = null;
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let i;
-      while ((i = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-        if (!line.startsWith('data:')) continue;
-        const data = line.slice(5).trim();
-        if (!data || data === '[DONE]') continue;
-        try {
-          const j = JSON.parse(data);
-          if (j.status === 'searching') ans.searching = true;
-          if (Array.isArray(j.sources)) ans.sources = j.sources.filter((x) => x && /^https?:\/\//.test(x.url)).map((x) => ({ title: String(x.title || ''), url: x.url }));
-          if (j.notice) ans.notice = String(j.notice);
-          if (j.model) ans.model = String(j.model);
-          if (j.error) streamErr = String(j.error);
-          const piece = j.response ?? j.choices?.[0]?.delta?.content ?? '';
-          if (piece) { ans.searching = false; ans.content += piece; }
-        } catch {}
-      }
-      if (Date.now() - last > 60) { paint(); last = Date.now(); }
-    }
-    ans.searching = false;
-    if (streamErr && !ans.content.trim()) throw new Error(streamErr);
-    if (!ans.content.trim()) throw new Error('Yarn AI had nothing to say. Try asking another way.');
-  } catch (e) {
-    ans.searching = false;
-    if (e.name === 'AbortError') { if (!ans.content) ans.content = '_(stopped)_'; }
-    else { ans.content = '⚠️ ' + e.message; ans.error = true; }
-  }
-  AI.busy = false; AI.ctrl = null; $('#aiSend').classList.remove('busy');
-  if (ans.error) AI.list.splice(idx, 1, ans);
-  paint(); aiSave(); aiRefreshUsage();
-  if (ans.error) { AI.list = AI.list.filter((m) => !m.error); aiSave(); }
-}
-const aiTa = $('#aiText');
-aiTa.addEventListener('input', () => { aiTa.style.height = 'auto'; aiTa.style.height = Math.min(aiTa.scrollHeight, 140) + 'px'; });
-aiTa.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !touch) { e.preventDefault(); $('#aiForm').requestSubmit(); } });
-$('#aiForm').addEventListener('submit', (e) => {
-  e.preventDefault();
-  if (AI.busy) { AI.ctrl && AI.ctrl.abort(); return; }
-  const q = aiTa.value; aiTa.value = ''; aiTa.style.height = 'auto';
-  aiAsk(q);
-});
-$('#aiMsgs').addEventListener('click', async (e) => {
-  const chip = e.target.closest('[data-q]'); if (chip) return aiAsk(chip.dataset.q);
-  const pic = e.target.closest('.ai-img'); if (pic) return showPhoto(pic.dataset.src);
-  const sh = e.target.closest('[data-imgshare]');
-  if (sh) return shareMsg({ type: 'image', id: Date.now(), text: '', local_url: AI.list[+sh.dataset.imgshare].image });
-  const sd = e.target.closest('[data-imgsend]');
-  if (sd) return forwardSheet({ type: 'image', text: '', local_url: AI.list[+sd.dataset.imgsend].image, meta: {} }, { fwd: false, title: 'Send image to…' });
-  const ag = e.target.closest('[data-again]'); if (ag) return aiImage(AI.list[+ag.dataset.again].prompt);
-  const cp = e.target.closest('[data-copy]');
-  if (cp) { try { await navigator.clipboard.writeText(AI.list[+cp.dataset.copy].content); toast('Copied'); } catch { toast('Could not copy'); } }
-});
-$('#aiBack').onclick = () => closeAI(true);
-$('#aiNew').onclick = () => {
-  if (AI.busy) return;
-  if (AI.list.length && !confirm('Start a new chat? This clears your Yarn AI conversation on this device.')) return;
-  AI.list = []; aiSave(); aiRender();
-};
-window.addEventListener('popstate', () => { if (AI.open) closeAI(false); });
 
 /* ================= voice & video calls (1-to-1, WebRTC) ================= */
 // Sound and picture travel directly between the two phones (or via an encrypted relay). The server only
@@ -1730,7 +1685,7 @@ function stopTones() { clearInterval(toneTimer); toneTimer = null; if (navigator
 function setCallStatus(t) { $('#callStatus').textContent = t; }
 function showCallUI(incoming) {
   const p = CALL.peer || {};
-  $('#callAv').innerHTML = avatarHTML(nameOf(p), p.username, '', p.avatar_key);
+  $('#callAv').innerHTML = avatarHTML(nameOf(p), 'u' + p.id, '', p.avatar_key);
   $('#callName').textContent = nameOf(p);
   const c = $('#call');
   c.className = 'call' + (CALL.kind === 'video' ? ' video' : '') + (incoming ? ' ringing' : '');
@@ -2002,12 +1957,12 @@ document.addEventListener('keydown', (e) => {
 // tap any profile photo in a sheet to view it big
 $('#sheet').addEventListener('click', (e) => { const a = e.target.closest('.big-av .avatar[data-photo]'); if (a) showPhoto(a.dataset.photo); });
 
-/* ================= find people by exact Yarn ID ================= */
-// A Yarn ID is a 12-digit contact address (not a phone number, not a password). Only exact IDs work: no search, no suggestions.
+/* ================= find people by exact Padi ID ================= */
+// A Padi ID is a 12-digit contact address (not a phone number, not a password). Only exact IDs work: no search, no suggestions.
 const idDigits = (v) => String(v || '').replace(/\D/g, '').slice(0, 12);
 const fmtId = (v) => idDigits(v).replace(/(\d{4})(?=\d)/g, '$1 ');
 function userRow(u, right = '') {
-  const sub = u.about ? esc(u.about) : u.yarn_id ? 'Yarn ID ' + fmtId(u.yarn_id) : '';
+  const sub = u.about ? esc(u.about) : u.yarn_id ? 'Padi ID ' + fmtId(u.yarn_id) : '';
   return `<div class="urow" data-uid="${u.id}">${avatarHTML(nameOf(u), 'u' + u.id, 'sm', u.avatar_key)}
     <div class="ur-main"><strong>${esc(nameOf(u))}</strong>${sub ? `<span>${sub}</span>` : ''}</div>${right}</div>`;
 }
@@ -2017,7 +1972,7 @@ function lookupCard(u, acts, idText) {
     <div class="uc-acts">${acts.map((a, i) => `<button class="btn sm ${a.cls || ''}" data-i="${i}" ${a.disabled ? 'disabled' : ''}>${a.label}</button>`).join('')}</div></div>`;
 }
 function finder(host, actionsFor) {
-  host.innerHTML = `<form class="finder"><span class="at">#</span><input class="finder-in id-in" inputmode="numeric" placeholder="0000 0000 0000" autocomplete="off" maxlength="16" aria-label="Yarn ID"><button class="finder-go">Find</button></form><div class="finder-res"></div>`;
+  host.innerHTML = `<form class="finder"><span class="at">#</span><input class="finder-in id-in" inputmode="numeric" placeholder="0000 0000 0000" autocomplete="off" maxlength="16" aria-label="Padi ID"><button class="finder-go">Find</button></form><div class="finder-res"></div>`;
   const inp = $('.finder-in', host), res = $('.finder-res', host);
   inp.addEventListener('input', () => { inp.value = fmtId(inp.value); });
   inp.addEventListener('paste', () => setTimeout(() => (inp.value = fmtId(inp.value)), 0));
@@ -2025,12 +1980,12 @@ function finder(host, actionsFor) {
     e.preventDefault();
     const id = idDigits(inp.value);
     if (!id) return;
-    if (id.length !== 12) { res.innerHTML = `<p class="muted pad">A Yarn ID has 12 digits. You've typed ${id.length}.</p>`; return; }
+    if (id.length !== 12) { res.innerHTML = `<p class="muted pad">A Padi ID has 12 digits. You've typed ${id.length}.</p>`; return; }
     res.innerHTML = '<p class="muted pad">Looking…</p>';
     try {
       const d = await api('users/lookup?id=' + id);
       const acts = actionsFor(d.user);
-      res.innerHTML = lookupCard(d.user, acts, 'Yarn ID ' + fmtId(id));
+      res.innerHTML = lookupCard(d.user, acts, 'Padi ID ' + fmtId(id));
       $$('.uc-acts button', res).forEach((b) => (b.onclick = () => acts[+b.dataset.i].fn(d.user, b)));
     } catch (x) { res.innerHTML = `<p class="muted pad">${esc(x.message)}</p>`; }
   });
@@ -2053,7 +2008,7 @@ async function addPadi(user, btn) {
 }
 
 function openNewChat() {
-  showModal(`<h2>New chat</h2><p class="muted">Enter your friend's 12-digit Yarn ID, or open the profile link they shared. You can message them straight away.</p><div id="nf"></div>
+  showModal(`<h2>New chat</h2><p class="muted">Enter your friend's 12-digit Padi ID, or open the profile link they shared. You can message them straight away.</p><div id="nf"></div>
     ${S.padis.length ? `<p class="sec">Your padis</p><div class="ulist" id="npl">${S.padis.map((u) => userRow(u)).join('')}</div>` : ''}
     <div class="row"><button class="btn ghost" data-close>Close</button></div>`);
   finder($('#nf'), (u) => [
@@ -2068,7 +2023,7 @@ $('#newGroupBtn').onclick = () => {
   showModal(`<h2>New group</h2>
     <input class="field" id="gn" placeholder="Group name" maxlength="50">
     <div class="chips" id="gc"></div>
-    <p class="sec">Add people by Yarn ID</p><div id="gf"></div>
+    <p class="sec">Add people by Padi ID</p><div id="gf"></div>
     ${S.padis.length ? `<p class="sec">From your padis</p><div class="ulist" id="gpl">${S.padis.map((u) => userRow(u, '<span class="pick">+</span>')).join('')}</div>` : ''}
     <div class="row"><button class="btn ghost" data-close>Cancel</button><button class="btn" id="gcreate">Create group</button></div>`);
   const draw = () => {
@@ -2102,7 +2057,7 @@ async function openProfile(uid) {
   const dmHere = S.chat && !S.chat.is_group && other().id === uid;
   showModal(`<div class="profile-top big-av">${avatarHTML(nameOf(u), 'u' + u.id, '', u.avatar_key)}
       <h2>${esc(nameOf(u))}</h2>
-      <p class="muted">${u.yarn_id ? 'Yarn ID ' + fmtId(u.yarn_id) : ''}${u.nickname ? ' · ' + esc(u.display_name) : ''}${seen ? ' · ' + seen : ''}</p>
+      <p class="muted">${u.yarn_id ? 'Padi ID ' + fmtId(u.yarn_id) : ''}${u.nickname ? ' · ' + esc(u.display_name) : ''}${seen ? ' · ' + seen : ''}</p>
       ${u.about ? `<p class="about">${esc(u.about)}</p>` : ''}
       ${u.deleted ? '<p class="pill">This account was deleted.</p>' : ''}
       ${u.is_padi ? `<p class="pill ${u.mutual ? 'ok' : ''}">${u.mutual ? '🤝 You are padis. You can see each other’s vibes.' : '⏳ Saved. You’ll see their vibes once they add you back.'}</p>` : ''}
@@ -2148,7 +2103,7 @@ function reportSheet(u, chatId) {
     ? S.loaded.filter((m) => m.sender_id === u.id && !['system', 'deleted'].includes(m.type) && !m.locked).slice(-30).reverse() : [];
   const label = (m) => (m.type === 'text' ? m.text : `[${m.type === 'image' ? 'Photo' : m.type === 'video' ? 'Video' : 'Voice message'}]${m.text ? ' ' + m.text : ''}`);
   showModal(`<h2>Report ${esc(nameOf(u))}</h2>
-    <p class="muted">Chats are end-to-end encrypted, so Yarn can only see what you choose to include below. Nothing else from this chat is uploaded.</p>
+    <p class="muted">Chats are end-to-end encrypted, so Padi can only see what you choose to include below. Nothing else from this chat is uploaded.</p>
     <p class="sec">Why are you reporting?</p>
     <div class="radio-list" id="rpReason">${[['spam', 'Spam'], ['scam', 'Scam or fraud'], ['harassment', 'Harassment or bullying'], ['inappropriate', 'Inappropriate content'], ['impersonation', 'Pretending to be someone else'], ['other', 'Something else']]
       .map(([v, l], i) => `<label><input type="radio" name="rp" value="${v}" ${i === 0 ? 'checked' : ''}> ${l}</label>`).join('')}</div>
@@ -2163,13 +2118,13 @@ function reportSheet(u, chatId) {
     const block = $('#rpBlock').checked;
     try {
       await api('reports', { body: { ...reach(u), chat_id: chatId, reason: ($('#rpReason input:checked') || {}).value, details: $('#rpDetails').value, items, block } });
-      hideModal(); toast('Report sent. Thank you for keeping Yarn safe.');
+      hideModal(); toast('Report sent. Thank you for keeping Padi safe.');
       if (block && S.chat && !S.chat.is_group && other().id === u.id) { S.blockedByMe = true; updateComposer(); }
       loadChats();
     } catch (e) { toast(e.message); }
   };
 }
-/* ----- my Yarn ID, profile link and QR code ----- */
+/* ----- my Padi ID, profile link and QR code ----- */
 let qrLoading = null;
 function loadQR() {
   if (window.yarnQR) return Promise.resolve();
@@ -2188,25 +2143,25 @@ async function shareProfileSheet() {
   try { tok = (await api('profile/link')).token; } catch {}
   const draw = async () => {
     showModal(`<div class="profile-top">${avatarHTML(me.display_name, 'u' + me.id, '', me.avatar_key)}<h2>${esc(me.display_name)}</h2></div>
-      <div class="idcard"><span>Your Yarn ID</span><strong>${fmtId(me.yarn_id)}</strong><button class="btn sm" id="spCopyId">Copy Yarn ID</button></div>
+      <div class="idcard"><span>Your Padi ID</span><strong>${fmtId(me.yarn_id)}</strong><button class="btn sm" id="spCopyId">Copy Padi ID</button></div>
       ${tok ? `<div class="qr-box" id="qrBox"><p class="muted">Loading QR code…</p></div>
         <div class="link-box"><code id="spLink">${esc(linkURL(tok))}</code></div>
         <div class="row"><button class="btn ghost" id="spCopy">Copy link</button><button class="btn" id="spShare">Share link</button></div>
         <div class="row"><button class="btn ghost" id="spNew">🔄 New link</button><button class="btn danger" id="spOff">Turn off link</button></div>`
       : `<p class="muted pad">You don't have a profile link right now. A link and QR code let friends message you without typing your ID.</p>
         <div class="row"><button class="btn" id="spNew">Create my profile link</button></div>`}
-      <div class="info-box">👋 Anyone who has your Yarn ID or link can message you straight away. There's no approval step. You can block or report anyone.<br><br>🔄 Making a new link (or turning it off) stops the old link and QR code from working, but anyone who already knows your Yarn ID can still message you.<br><br>🔑 Your Yarn ID is just a contact address. It isn't a password and can't be used to sign in.</div>
+      <div class="info-box">👋 Anyone who has your Padi ID or link can message you straight away. There's no approval step. You can block or report anyone.<br><br>🔄 Making a new link (or turning it off) stops the old link and QR code from working, but anyone who already knows your Padi ID can still message you.<br><br>🔑 Your Padi ID is just a contact address. It isn't a password and can't be used to sign in.</div>
       <div class="row"><button class="btn ghost" data-close>Done</button></div>`);
-    $('#spCopyId').onclick = () => copyText(fmtId(me.yarn_id), 'Yarn ID copied');
+    $('#spCopyId').onclick = () => copyText(fmtId(me.yarn_id), 'Padi ID copied');
     if (tok) {
       try { await loadQR(); $('#qrBox').innerHTML = qrSVG(linkURL(tok)); } catch { $('#qrBox').innerHTML = '<p class="muted">Could not load the QR code. The link still works.</p>'; }
       $('#spCopy').onclick = () => copyText(linkURL(tok), 'Link copied');
       $('#spShare').onclick = async () => {
-        if (navigator.share) { try { await navigator.share({ title: 'Chat with me on Yarn', text: `Message me on Yarn (${me.display_name})`, url: linkURL(tok) }); } catch {} }
+        if (navigator.share) { try { await navigator.share({ title: 'Chat with me on Padi', text: `Message me on Padi (${me.display_name})`, url: linkURL(tok) }); } catch {} }
         else copyText(linkURL(tok), 'Link copied');
       };
       $('#spOff').onclick = async () => {
-        if (!confirm('Turn off your profile link? The current link and QR code will stop working. Your Yarn ID keeps working.')) return;
+        if (!confirm('Turn off your profile link? The current link and QR code will stop working. Your Padi ID keeps working.')) return;
         try { tok = (await api('profile/link', { body: { action: 'off' } })).token; toast('Profile link turned off'); draw(); } catch (e) { toast(e.message); }
       };
     }
@@ -2218,15 +2173,14 @@ async function shareProfileSheet() {
   draw();
 }
 function encryptionInfo() {
-  showModal(`<h2>🔒 How Yarn protects your messages</h2>
+  showModal(`<h2>🔒 How Padi protects your messages</h2>
     <div class="enc-info">
-      <p><b>What's end-to-end encrypted</b><br>Text messages, photos, videos, voice notes, captions, replies and vibes sent with the current app. They're locked on your device and can only be unlocked by the people they were sent to. Yarn's server stores only scrambled copies it can't read.</p>
+      <p><b>What's end-to-end encrypted</b><br>Text messages, photos, videos, voice notes, captions, replies and vibes sent with the current app. They're locked on your device and can only be unlocked by the people they were sent to. Padi's server stores only scrambled copies it can't read.</p>
       <p><b>How the keys work</b><br>When you sign up, your device makes a key pair (P-256, using your browser's built-in Web Crypto). Each message gets a fresh random key, locked separately for each person in the chat. Your private key never leaves your device unprotected.</p>
-      <p><b>Using more than one device</b><br>A backup of your private key is stored on Yarn's server, locked with a key made from your password on your device. Your password itself is never sent to Yarn. A new phone unlocks the backup when you sign in.</p>
+      <p><b>Using more than one device</b><br>A backup of your private key is stored on Padi's server, locked with a key made from your password on your device. Your password itself is never sent to Padi. A new phone unlocks the backup when you sign in.</p>
       <p><b>If you forget your password</b><br>The backup can't be unlocked, so older encrypted messages can't be recovered. Use a strong password you'll remember: a weak password makes the backup easier to break.</p>
-      <p><b>What is not end-to-end encrypted</b><br>Your name, profile photo, about text, Yarn ID, group names, call history notes, who you chat with and when, and any messages sent before encryption was added to Yarn. Voice and video calls are encrypted between devices (WebRTC), but call keys aren&#39;t verified the way message keys are, so calls don&#39;t have the same end-to-end guarantee.</p>
-      <p><b>Yarn AI</b><br>Questions you send to Yarn AI are not end-to-end encrypted. They're sent to an AI service (and a web search service when needed) to get an answer. Your AI chat history is saved only on your device.</p>
-      <p><b>Good to know</b><br>Like any web app, Yarn's code is delivered by Yarn's server when it loads, so you're trusting that code. Yarn has not had an independent security audit. To double-check a chat, open the person's profile and use <b>Verify encryption</b> to compare safety codes.</p>
+      <p><b>What is not end-to-end encrypted</b><br>Your name, profile photo, about text, Padi ID, group names, call history notes, who you chat with and when, and any messages sent before encryption was added to Padi. Voice and video calls are encrypted between devices (WebRTC), but call keys aren&#39;t verified the way message keys are, so calls don&#39;t have the same end-to-end guarantee.</p>
+      <p><b>Good to know</b><br>Like any web app, Padi's code is delivered by Padi's server when it loads, so you're trusting that code. Padi has not had an independent security audit. To double-check a chat, open the person's profile and use <b>Verify encryption</b> to compare safety codes.</p>
     </div>
     <div class="row"><button class="btn ghost" data-close>Got it</button></div>`);
 }
@@ -2246,7 +2200,7 @@ async function openLinkProfile(tok) {
     if (d.self) return showModal(`<div class="profile-top">${avatarHTML(d.user.display_name, 'u' + d.user.id, '', d.user.avatar_key)}<h2>This is your own profile link</h2><p class="muted">Share it with friends so they can message you.</p></div><div class="row"><button class="btn ghost" data-close>OK</button></div>`);
     const u = d.user;
     const acts = [{ label: 'Message', fn: openDirect }, u.is_padi ? { label: 'Padi ✓', cls: 'ghost', disabled: true } : { label: 'Add to padis', cls: 'ghost', fn: addPadi }];
-    showModal(`<h2>Shared profile</h2><p class="muted">Someone shared this Yarn profile with you. You can message them straight away.</p>${lookupCard(u, acts, '')}<div class="row"><button class="btn ghost" data-close>Not now</button></div>`);
+    showModal(`<h2>Shared profile</h2><p class="muted">Someone shared this Padi profile with you. You can message them straight away.</p>${lookupCard(u, acts, '')}<div class="row"><button class="btn ghost" data-close>Not now</button></div>`);
     $$('#sheet .uc-acts button').forEach((b) => (b.onclick = () => acts[+b.dataset.i].fn(u, b)));
   } catch (e) { showModal(`<h2>Profile link</h2><p class="muted pad">${esc(e.message)}</p><div class="row"><button class="btn ghost" data-close>OK</button></div>`); }
 }
@@ -2267,7 +2221,7 @@ $('#chatInfoBtn').onclick = () => {
   showModal(`<div class="profile-top">${avatarHTML(S.chat.name, 'g' + S.chat.id)}<h2>${esc(S.chat.name)}</h2><p class="muted">Group · ${S.members.length} members</p></div>
     <p class="sec">Members</p>
     <div class="ulist" id="gml">${S.members.map((m) => userRow(m, m.id === S.me.id ? '<span class="tag">You</span>' : isOnline(m.last_seen) ? '<span class="tag on">online</span>' : '')).join('')}</div>
-    <p class="sec">Add someone by Yarn ID</p><div id="gaf"></div>
+    <p class="sec">Add someone by Padi ID</p><div id="gaf"></div>
     <div class="menu"><button data-ga="arch">🗄️ ${S.chatArchived ? 'Unarchive chat' : 'Archive chat'}</button></div>
     <div class="row"><button class="btn danger" id="leave">Leave group</button><button class="btn ghost" data-close>Close</button></div>`);
   $('#gml').onclick = (e) => { const r = e.target.closest('.urow'); if (r) openProfile(+r.dataset.uid); };
@@ -2287,20 +2241,27 @@ $('#chatInfoBtn').onclick = () => {
 
 /* ================= padis tab ================= */
 async function loadPadis() {
-  try { const d = await api('padis'); S.padis = d.padis; S.serverNow = d.now; if (S.tab === 'padis') renderPadis(); if (S.chat) updateUnknownBar(); } catch {}
+  try {
+    const d = await api('padis'); S.padis = d.padis; S.serverNow = d.now;
+    const key = JSON.stringify(S.padis.map((p) => [p.id, p.nickname, p.display_name, p.avatar_key, p.mutual, isOnline(p.last_seen)]));
+    if (key !== S.padisKey) { S.padisKey = key; if (S.tab === 'padis') renderPadis(); }
+    if (S.chat) updateUnknownBar();
+  } catch {}
 }
 function renderPadis() {
   const host = $('#padisView');
+  const typed = $('#pf .finder-in'), keep = typed ? { v: typed.value, f: document.activeElement === typed } : null;
   const mutual = S.padis.filter((u) => u.mutual).length;
-  host.innerHTML = `<div class="pad-find"><p class="pad-hint">Add a padi with their Yarn ID. Saving someone doesn't need their approval.</p><div id="pf"></div></div>
+  host.innerHTML = `<div class="pad-find"><p class="pad-hint">Add a padi with their Padi ID. Saving someone doesn't need their approval.</p><div id="pf"></div></div>
     ${S.padis.length ? `<p class="sec">Your padis · ${S.padis.length}${mutual ? ` · ${mutual} mutual 🤝` : ''}</p>
     <div class="ulist big" id="pl">${S.padis.map((u) => userRow({ ...u, avatar_key: u.avatar_key },
       `<span class="tag ${u.mutual ? 'ok' : ''}">${u.mutual ? '🤝' : 'waiting'}</span>`).replace('class="avatar sm', `class="avatar sm ${isOnline(u.last_seen) ? 'online' : ''}`)).join('')}</div>`
     : `<div class="list-empty"><strong>No padis yet</strong>Padis are your saved people. When you both add each other, you can see each other's vibes.</div>`}`;
-  finder($('#pf'), (u) => [
+  const fnd = finder($('#pf'), (u) => [
     u.is_padi ? { label: 'Padi ✓', cls: 'ghost', disabled: true } : { label: 'Add to padis', fn: addPadi },
     { label: 'Message', cls: 'ghost', fn: openDirect },
   ]);
+  if (keep) { fnd.input.value = keep.v; if (keep.f) fnd.input.focus(); }   // a refresh never wipes what you are typing
   const pl = $('#pl');
   if (pl) pl.onclick = (e) => { const r = e.target.closest('.urow'); if (r) openProfile(+r.dataset.uid); };
 }
@@ -2313,7 +2274,8 @@ async function loadVibes() {
     const d = await api('vibes');
     S.vibes = { mine: d.mine, feed: d.feed.filter((v) => canOpen(v.body)) }; S.serverNow = d.now;
     $('#vibesDot').classList.toggle('hidden', !d.feed.some((v) => !v.seen));
-    if (S.tab === 'vibes') renderVibes();
+    const key = JSON.stringify([S.vibes.mine.map((v) => [v.id, v.views]), S.vibes.feed.map((v) => [v.id, v.seen])]);
+    if (key !== S.vibesKey) { S.vibesKey = key; if (S.tab === 'vibes') renderVibes(); }
   } catch {}
 }
 function vibeGroups() {
@@ -2333,10 +2295,10 @@ function renderVibes() {
   const mine = S.vibes.mine;
   const groups = vibeGroups();
   const unseen = groups.filter((g) => g.unseen), seen = groups.filter((g) => !g.unseen);
-  const row = (g) => `<div class="vrow" data-uid="${g.user.id}">${ring(avatarHTML(nameOf(g.user), g.user.username, 'sm', g.user.avatar_key), g.unseen ? '' : 'seen')}
+  const row = (g) => `<div class="vrow" data-uid="${g.user.id}">${ring(avatarHTML(nameOf(g.user), 'u' + g.user.id, 'sm', g.user.avatar_key), g.unseen ? '' : 'seen')}
       <div class="ur-main"><strong>${esc(nameOf(g.user))}</strong><span>${g.items.length > 1 ? g.items.length + ' updates · ' : ''}${ago(g.last)}</span></div></div>`;
   host.innerHTML = `
-    <div class="vrow me" id="myVibe">${mine.length ? ring(avatarHTML(S.me.display_name, S.me.username, 'sm', S.me.avatar_key), 'mine') : `<span class="add-av">${avatarHTML(S.me.display_name, S.me.username, 'sm', S.me.avatar_key)}<i>+</i></span>`}
+    <div class="vrow me" id="myVibe">${mine.length ? ring(avatarHTML(S.me.display_name, 'u' + S.me.id, 'sm', S.me.avatar_key), 'mine') : `<span class="add-av">${avatarHTML(S.me.display_name, 'u' + S.me.id, 'sm', S.me.avatar_key)}<i>+</i></span>`}
       <div class="ur-main"><strong>My vibe</strong><span>${mine.length ? `${mine.length} update${mine.length > 1 ? 's' : ''} · ${ago(mine[mine.length - 1].created_at)} · 👁 ${mine.reduce((a, v) => a + v.views, 0)}` : 'Tap to share what’s up'}</span></div>
       ${mine.length ? '<button class="icon add-more" id="addVibe" aria-label="Add another vibe">＋</button>' : ''}</div>
     ${unseen.length ? `<p class="sec">New</p>${unseen.map(row).join('')}` : ''}
@@ -2482,7 +2444,7 @@ async function showVibe() {
   try { plain = await openVibe(v, g.user.public_key); } catch { plain = { text: LOCKED, url: null }; }
   if (ticket !== ST.ticket || $('#story').classList.contains('hidden')) return;
   $('#stBars').innerHTML = g.items.map((_, k) => `<i class="${k < ST.i ? 'done' : ''}"><b></b></i>`).join('');
-  $('#stAv').innerHTML = avatarHTML(nameOf(g.user), g.user.username, 'sm', g.user.avatar_key);
+  $('#stAv').innerHTML = avatarHTML(nameOf(g.user), 'u' + g.user.id, 'sm', g.user.avatar_key);
   $('#stName').textContent = g.mineGroup ? 'My vibe' : nameOf(g.user);
   $('#stTime').textContent = ago(v.created_at);
   const cap = plain.text ? `<p class="st-cap">${linkify(plain.text)}</p>` : '';
@@ -2555,8 +2517,8 @@ function openSettings() {
       ${me.avatar_key ? '<button class="linkbtn" id="avDel">Remove photo</button>' : ''}
     </div>
 
-    <div class="idcard"><span>Your Yarn ID</span><strong>${me.yarn_id ? fmtId(me.yarn_id) : 'Getting your ID…'}</strong>
-      <div class="row"><button class="btn sm ghost" id="sCopyId">Copy Yarn ID</button><button class="btn sm" id="sShareProf">Share profile</button></div>
+    <div class="idcard"><span>Your Padi ID</span><strong>${me.yarn_id ? fmtId(me.yarn_id) : 'Getting your ID…'}</strong>
+      <div class="row"><button class="btn sm ghost" id="sCopyId">Copy Padi ID</button><button class="btn sm" id="sShareProf">Share profile</button></div>
       <small>Friends use this to message you. It's a contact address, not a password.</small></div>
 
     <p class="sec">Profile</p>
@@ -2585,7 +2547,7 @@ function openSettings() {
     <button class="linkbtn" id="sTest">🔔 Test sound</button>
 
     <p class="sec">App lock</p>
-    <div class="setting"><div><strong>PIN lock</strong><span>${PIN.get() ? 'On. Yarn asks for your PIN when you open it.' : 'Ask for a 4-digit PIN when Yarn opens'}</span></div>
+    <div class="setting"><div><strong>PIN lock</strong><span>${PIN.get() ? 'On. Padi asks for your PIN when you open it.' : 'Ask for a 4-digit PIN when Padi opens'}</span></div>
       ${PIN.get() ? '<button class="btn sm ghost" id="pinOff">Turn off</button>' : '<button class="btn sm" id="pinOn">Set PIN</button>'}</div>
     ${PIN.get() ? `<div class="setting"><div><strong>Lock automatically</strong><span>After leaving the app</span></div></div>
       <div class="seg" id="pinAfter">${[[0, 'Immediately'], [60000, 'After 1 min'], [300000, 'After 5 min']].map(([v, l]) => `<button data-v="${v}" class="${PIN.get().after === v ? 'on' : ''}">${l}</button>`).join('')}</div>
@@ -2595,14 +2557,14 @@ function openSettings() {
     <div class="setting"><div><strong>🔒 End-to-end encryption</strong><span>Messages, photos, videos, voice notes and vibes you send are encrypted on your device before they leave it. Some things, like names and profile photos, are not.</span></div><button class="btn sm ghost" id="sEncInfo">How it works</button></div>
 
     <p class="sec">App</p>
-    <div class="setting"><div><strong>Install Yarn</strong><span>${isStandalone() ? 'Installed on this device' : 'Add Yarn to your home screen'}</span></div><button class="btn sm ${isStandalone() ? 'ghost' : ''}" id="sInstall">${isStandalone() ? 'Installed' : 'Install'}</button></div>
+    <div class="setting"><div><strong>Install Padi</strong><span>${isStandalone() ? 'Installed on this device' : 'Add Padi to your home screen'}</span></div><button class="btn sm ${isStandalone() ? 'ghost' : ''}" id="sInstall">${isStandalone() ? 'Installed' : 'Install'}</button></div>
 
     <p class="sec">Devices</p>
     <p class="muted dev-note">Log in on any phone or computer with your username and password. All your chats and media come with you, and encrypted messages stay encrypted.</p>
     <div class="ulist" id="devList"><p class="muted pad">Loading…</p></div>
 
     <p class="sec">Password</p>
-    <p class="muted dev-note">You sign in with your username <b>@${esc(me.username)}</b> and password. Your username is private: people find you by Yarn ID instead.</p>
+    <p class="muted dev-note">You sign in with your username <b>@${esc(me.username)}</b> and password. Your username is private: people find you by Padi ID instead.</p>
     <input class="field" type="password" id="pCur" placeholder="Current password" autocomplete="current-password">
     <input class="field" type="password" id="pNew" placeholder="New password (6+ characters)" autocomplete="new-password">
     <div class="row"><button class="btn ghost" id="pSave">Change password</button></div>
@@ -2636,7 +2598,7 @@ function openSettings() {
   $('#avBtn').onclick = () => pickImage('avatar');
   const avDel = $('#avDel');
   if (avDel) avDel.onclick = async () => { try { const d = await api('profile/avatar', { body: { remove: true } }); saveMe(d.user); openSettings(); } catch (e) { toast(e.message); } };
-  $('#sCopyId').onclick = () => me.yarn_id && copyText(fmtId(me.yarn_id), 'Yarn ID copied');
+  $('#sCopyId').onclick = () => me.yarn_id && copyText(fmtId(me.yarn_id), 'Padi ID copied');
   $('#sShareProf').onclick = shareProfileSheet;
   $('#sEncInfo').onclick = encryptionInfo;
   const saveToggle = async (key, val, msg) => { try { const d = await api('profile', { body: { [key]: val } }); saveMe(d.user); toast(msg); S.chatsKey = ''; loadChats(); } catch (e) { toast(e.message); } };
@@ -2653,14 +2615,14 @@ function openSettings() {
   };
   $('#sPop').onchange = (e) => { S.prefs.popups = e.target.checked; LS.set('yarn_prefs', S.prefs); };
   $('#sSnd').onchange = (e) => { S.prefs.sound = e.target.checked; LS.set('yarn_prefs', S.prefs); };
-  $('#sTest').onclick = () => { const was = S.prefs.sound; S.prefs.sound = true; sounds.bell(); S.prefs.sound = was; banner('Yarn', 'This is how new messages will pop up 👋', avatarHTML('Yarn', 'yarn', 'sm'), null); };
+  $('#sTest').onclick = () => { const was = S.prefs.sound; S.prefs.sound = true; sounds.bell(); S.prefs.sound = was; banner('Padi', 'This is how new messages will pop up 👋', avatarHTML('Padi', 'yarn', 'sm'), null); };
   pushState().then((st) => {
     const txt = $('#pushTxt'), btn = $('#pushBtn'); if (!txt) return;
     const msg = {
-      on: 'On for this device, even when Yarn is closed',
-      off: 'Get alerts when Yarn is closed',
+      on: 'On for this device, even when Padi is closed',
+      off: 'Get alerts when Padi is closed',
       denied: 'Blocked. Allow notifications for this site in your browser or phone settings.',
-      install: 'On iPhone, install Yarn to your Home Screen first',
+      install: 'On iPhone, install Padi to your Home Screen first',
       unsupported: 'Not supported in this browser',
     }[st];
     txt.textContent = msg;
@@ -2744,6 +2706,7 @@ document.addEventListener('visibilitychange', () => {
   loadChats(); if (S.chatId) pollMessages();
 });
 async function startApp() {
+  try { Object.keys(localStorage).forEach((k) => { if (k.startsWith('yarn_ai_')) localStorage.removeItem(k); }); } catch {}
   $('#auth').classList.add('hidden'); $('#app').classList.remove('hidden');
   drawMe(); setTab('chats');
   if (PIN.get()) lockApp();

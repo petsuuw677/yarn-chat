@@ -1,5 +1,5 @@
-// Yarn service worker: install as an app, open fast, and show message notifications even when Yarn is closed.
-const SHELL = 'yarn-shell-v6';
+// Padi service worker: install as an app, open fast, and show message notifications even when Padi is closed.
+const SHELL = 'padi-shell-v7';
 const MEDIA = 'yarn-media-v1';
 const FILES = ['/', '/style.css', '/app.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
@@ -82,12 +82,12 @@ async function onPush() {
     } catch {}
   }
   const apple = /iPhone|iPad|Macintosh/.test(self.navigator.userAgent);
-  // If Yarn is open on screen, the app shows its own pop-up instead
+  // If Padi is open on screen, the app shows its own pop-up instead
   if (visible && !apple) return;
   // Incoming call: ring loudly, show who's calling
   if (call) {
     const who = call.nick || call.display_name;
-    return self.registration.showNotification(sess && sess.hidePreview ? 'Yarn' : `📞 ${who}`, {
+    return self.registration.showNotification(sess && sess.hidePreview ? 'Padi' : `📞 ${who}`, {
       body: `Incoming ${call.kind === 'video' ? 'video' : 'voice'} call · tap to answer`, tag: 'yarn-call', renotify: true, requireInteraction: true,
       icon: '/icon-192.png', badge: '/badge-96.png', vibrate: [500, 250, 500, 250, 500, 250, 500], data: { call: call.id, chat: call.chat_id },
     });
@@ -99,7 +99,7 @@ async function onPush() {
   if (self.navigator.setAppBadge && total) self.navigator.setAppBadge(total).catch(() => {});
   if (!fresh.length) {
     if (items.length && !apple) return;
-    return self.registration.showNotification('Yarn', { body: 'You have a new message', tag: 'yarn-new', icon: '/icon-192.png', badge: '/badge-96.png', silent: visible });
+    return self.registration.showNotification('Padi', { body: 'You have a new message', tag: 'yarn-new', icon: '/icon-192.png', badge: '/badge-96.png', silent: visible });
   }
   const keyRec = sess ? await idbGet('id-' + sess.userId) : null;
   for (const m of fresh.slice(0, 3)) {
@@ -117,7 +117,7 @@ async function onPush() {
       if (m.unread > 1) text += `  (+${m.unread - 1} more)`;
     }
     if (m.is_group && !sess.hidePreview) text = who.split(' ')[0] + ': ' + text;
-    await self.registration.showNotification(sess.hidePreview ? 'Yarn' : title, {
+    await self.registration.showNotification(sess.hidePreview ? 'Padi' : title, {
       body: text, tag: 'yarn-' + m.chat_id, renotify: true, icon: '/icon-192.png', badge: '/badge-96.png',
       data: { chat: m.chat_id }, timestamp: m.created_at, silent: visible,
     });
